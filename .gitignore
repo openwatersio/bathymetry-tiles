@@ -1,0 +1,6 @@
+data/
+work/
+output/
+dist/
+.venv/
+node_modules

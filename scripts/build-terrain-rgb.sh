@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Build Terrain-RGB tiles from a GEBCO GeoTIFF.
+#
+# Usage:
+#   ./scripts/build-terrain-rgb.sh [input.tif]
+#
+# Outputs Terrain-RGB tiles as MBTiles, then extracts to a tile directory
+# for local development.
+#
+# Uses rio-rgbify which correctly resamples the raw elevation data at each
+# zoom level BEFORE encoding to RGB — this avoids the artifacts that
+# gdal2tiles produces when resampling already-encoded RGB bytes.
+#
+# Encoding: Mapbox Terrain-RGB (height = -10000 + (R*65536 + G*256 + B) * 0.1)
+
+source "$(dirname "$0")/config.sh"
+check_deps rio gdal_edit.py gdalwarp pmtiles
+
+# Activate the project venv if it exists (for rio-rgbify).
+if [[ -f "${PROJECT_DIR}/.venv/bin/activate" ]]; then
+  source "${PROJECT_DIR}/.venv/bin/activate"
+fi
+
+resolve_input_dem "${1:-}"
+
+# ─── Upsample DEM ───────────────────────────────────────────────────────────
+UPSAMPLED="${WORK_DIR}/gebco_upsampled${SUFFIX}.tif"
+upsample_dem "${INPUT_TIF}" "${UPSAMPLED}"
+
+# ─── Prepare DEM for encoding ────────────────────────────────────────────────
+# Remove NoData metadata — rio-rgbify encodes NoData pixels as valid elevation
+# values, producing artifacts. Work on a copy to avoid modifying the original.
+PREPARED="${WORK_DIR}/gebco_prepared${SUFFIX}.tif"
+
+if cached "${PREPARED}"; then
+  log "Prepared DEM already exists: ${PREPARED}"
+else
+  rm -f "${PREPARED}"
+  log "Preparing DEM (unsetting NoData)..."
+  cp "${UPSAMPLED}" "${PREPARED}"
+  gdal_edit.py -unsetnodata "${PREPARED}"
+  log "Prepared: ${PREPARED}"
+fi
+
+# ─── Generate Terrain-RGB MBTiles ────────────────────────────────────────────
+# rio-rgbify reads the source DEM at each zoom level, resamples with bilinear
+# interpolation, reprojects to Web Mercator, then encodes to RGB per-tile.
+# This produces correct elevation values at every zoom — no encoding artifacts.
+TERRAIN_MBTILES="${WORK_DIR}/terrain-rgb${BBOX:+_${BBOX}}.mbtiles"
+
+if cached "${TERRAIN_MBTILES}"; then
+  log "Terrain-RGB MBTiles already exists: ${TERRAIN_MBTILES}"
+else
+  rm -f "${TERRAIN_MBTILES}"
+  log "Building Terrain-RGB tiles (zoom 0–${TERRAIN_MAX_ZOOM})..."
+  PYTHONWARNINGS="ignore::UserWarning,ignore::FutureWarning" \
+  rio rgbify \
+    -b -10000 \
+    -i 0.1 \
+    --min-z 0 \
+    --max-z "${TERRAIN_MAX_ZOOM}" \
+    --format png \
+    -j "${THREADS}" \
+    "${PREPARED}" \
+    "${TERRAIN_MBTILES}"
+  log "MBTiles: ${TERRAIN_MBTILES}"
+fi
+
+# ─── Convert to PMTiles ──────────────────────────────────────────────────────
+TERRAIN_PMTILES="${OUTPUT_DIR}/terrain-rgb${BBOX:+_${BBOX}}.pmtiles"
+
+if cached "${TERRAIN_PMTILES}"; then
+  log "PMTiles already exists: ${TERRAIN_PMTILES}"
+else
+  rm -f "${TERRAIN_PMTILES}"
+  log "Converting to PMTiles..."
+  pmtiles convert "${TERRAIN_MBTILES}" "${TERRAIN_PMTILES}"
+  log "PMTiles: ${TERRAIN_PMTILES} ($(du -h "${TERRAIN_PMTILES}" | cut -f1))"
+fi
+
+log ""
+log "Terrain-RGB build complete."
+log "  PMTiles: ${TERRAIN_PMTILES}"
+log "  Tiles:   ${TERRAIN_TILES}/{z}/{x}/{y}.png"
+log "  Encoding: mapbox (height = -10000 + (R*65536 + G*256 + B) * 0.1)"
+log "  Max zoom: ${TERRAIN_MAX_ZOOM}"

@@ -1,0 +1,88 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      bbox:
+        description: >
+          Bounding box "west,south,east,north" (leave empty for global).
+          Examples: "-80.5,20.9,-72.7,27.3" (Bahamas), "-82,24,-65,45" (US East Coast)
+        required: false
+        default: ""
+      max_zoom:
+        description: "Maximum tile zoom level"
+        required: false
+        default: "14"
+  # Uncomment to run on schedule (e.g. after GEBCO annual release in July):
+  # schedule:
+  #   - cron: "0 0 15 8 *"  # Aug 15 each year
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+env:
+  BBOX: ${{ github.event.inputs.bbox || '-80.5,20.9,-72.7,27.3' }}
+  MAX_ZOOM: ${{ github.event.inputs.max_zoom || '14' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build Docker image
+        run: docker build -t gebco-pipeline .
+
+      - name: Run pipeline
+        run: |
+          docker run --rm \
+            -e BBOX="${BBOX}" \
+            -e MAX_ZOOM="${MAX_ZOOM}" \
+            -v "${{ github.workspace }}/output:/app/output" \
+            gebco-pipeline
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build web app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Prepare Pages site
+        run: |
+          cp -r output/* dist/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
