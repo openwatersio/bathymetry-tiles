@@ -33,6 +33,10 @@ SLOPE_HIGH="${6:-5}"
 
 WORK="$(dirname "${OUTPUT_TIF}")"
 
+# Clear any leftover intermediates from an interrupted run so the GDAL tools
+# don't refuse to overwrite an existing output.
+rm -f "${WORK}"/_sdem_*.tif "${WORK}"/_sdem_*.txt
+
 log "Slope-selective DEM smoothing (dem_blur=${DEM_BLUR}, mask_blur=${MASK_BLUR}, slope ${SLOPE_LOW}°–${SLOPE_HIGH}°)..."
 
 # ─── Step 1: Prepare DEM for blurring ────────────────────────────────────────
@@ -43,7 +47,7 @@ log "  Clamping land to sea level..."
 gdal_calc.py -A "${INPUT_TIF}" \
   --calc="numpy.where(A >= 0, 0, A).astype(numpy.float32)" \
   --outfile="${WORK}/_sdem_prep.tif" \
-  --type=Float32 --format=GTiff --quiet
+  --type=Float32 --format=GTiff --overwrite --quiet
 
 # ─── Step 2: Blur DEM (out-of-core) ──────────────────────────────────────────
 log "  Blurring DEM (${DEM_BLUR})..."
@@ -89,7 +93,7 @@ gdal_calc.py \
   --outfile="${OUTPUT_TIF}" \
   --type=Float32 --format=GTiff \
   --creation-option=COMPRESS=LZW --creation-option=TILED=YES \
-  --quiet
+  --overwrite --quiet
 
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
 rm -f "${WORK}"/_sdem_*.tif "${WORK}"/_sdem_*.txt
