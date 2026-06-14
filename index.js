@@ -7,12 +7,14 @@ const protocol = new Protocol();
 maplibregl.addProtocol("pmtiles", protocol.tile);
 
 // ─── Tile sources ───────────────────────────────────────────────────────
-// BBOX is injected at build time via vite.config.js (from the BBOX env var).
+// BBOX and TILES_BASE are injected at build time via vite.config.js.
 // eslint-disable-next-line no-undef
 const BBOX = __BBOX__ ? __BBOX__.split(",").map(Number) : [-180, -85, 180, 85];
 const suffix = __BBOX__ ? `_${__BBOX__}` : "";
-const terrainUrl = `pmtiles://${location.origin}/terrain-rgb${suffix}.pmtiles`;
-const contourUrl = `pmtiles://${location.origin}/gebco-contours${suffix}.pmtiles`;
+// eslint-disable-next-line no-undef
+const tilesBase = __TILES_BASE__ || location.origin;
+const terrainUrl = `pmtiles://${tilesBase}/terrain${suffix}.pmtiles`;
+const contourUrl = `pmtiles://${tilesBase}/contours${suffix}.pmtiles`;
 
 // ─── Map style ────────────────────────────────────────────────────────────
 const style = {

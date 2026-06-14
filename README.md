@@ -20,11 +20,11 @@ sudo apt install gdal-bin python3-gdal python3-numpy jq bc
 # tippecanoe: build from https://github.com/felt/tippecanoe
 # rio-rgbify: pip install rio-rgbify
 
-# Run the full pipeline (downloads ~7.5 GB)
-./scripts/pipeline.sh
+# Run the full global pipeline (downloads ~4.2 GB)
+./scripts/build
 
 # Or for a regional extract (much faster for testing)
-BBOX="-85,20,-70,35" ./scripts/pipeline.sh
+BBOX="-85,20,-70,35" ./scripts/build
 ```
 
 ### Docker
@@ -42,11 +42,17 @@ docker run --rm -e BBOX="-85,20,-70,35" \
 
 ### GitHub Actions
 
-The workflow at `.github/workflows/ci.yml` can be triggered manually:
+The workflow at `.github/workflows/ci.yml`:
 
-1. Go to **Actions** → **Build** → **Run workflow**
-2. Optionally set a bounding box for a regional build
-3. Tiles are deployed to GitHub Pages when complete
+- **On every push** it builds `terrain` and `contour` tiles as separate parallel
+  jobs and saves them as downloadable workflow artifacts (the viewer builds too).
+- **On a published release** it additionally pushes the tiles to Cloudflare R2
+  (served at `tiles.openwaters.io`) and deploys the viewer to GitHub Pages.
+- **Manual runs** (Actions → Build → Run workflow) accept an optional bounding box
+  for a regional build; the default is full global.
+
+Publishing requires these repository secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+`R2_SECRET_ACCESS_KEY`, `R2_BUCKET`.
 
 ## Preview
 
@@ -63,14 +69,15 @@ You can also drag any `.pmtiles` file into the [PMTiles Viewer](https://protomap
 
 ## Pipeline scripts
 
-| Script                             | Purpose                                             |
-| ---------------------------------- | --------------------------------------------------- |
-| `scripts/pipeline.sh`              | Runs the full pipeline end to end                   |
-| `scripts/download.sh`              | Downloads GEBCO GeoTIFF (with optional BBOX clip)   |
-| `scripts/build-terrain-rgb.sh`     | Builds Terrain-RGB raster tiles (MBTiles + PMTiles) |
-| `scripts/contour` | Generates contour vector tiles (PMTiles)            |
-| `scripts/smooth-contours.py`       | Chaikin corner-cutting smoothing for contour lines  |
-| `scripts/config.sh`                | Shared configuration (intervals, paths, helpers)    |
+| Script                   | Purpose                                                  |
+| ------------------------ | -------------------------------------------------------- |
+| `scripts/build`          | Runs the full pipeline end to end (download → tiles)     |
+| `scripts/download`       | Downloads GEBCO GeoTIFF (with optional BBOX clip)        |
+| `scripts/terrain`        | Builds Terrain-RGB raster tiles (PMTiles)                |
+| `scripts/contour`        | Builds contour vector tiles (PMTiles)                    |
+| `scripts/smooth-dem`     | Slope-selective DEM smoothing (flat areas only)          |
+| `scripts/smooth-contours`| Chaikin corner-cutting smoothing for contour lines       |
+| `scripts/config.sh`      | Shared configuration (intervals, paths, helpers)         |
 
 ## Configuration
 
@@ -79,11 +86,11 @@ Set environment variables before running:
 | Variable           | Default            | Description                                     |
 | ------------------ | ------------------ | ----------------------------------------------- |
 | `BBOX`             | _(empty = global)_ | Bounding box `"west,south,east,north"` (commas) |
-| `MAX_ZOOM`         | `14`               | Maximum contour tile zoom level                 |
+| `MAX_ZOOM`         | `9`                | Maximum contour tile zoom level                 |
 | `TERRAIN_MAX_ZOOM` | `9`                | Maximum terrain-RGB tile zoom level             |
 | `THREADS`          | `nproc`            | Parallel processing threads                     |
 | `FORCE`            | _(empty)_          | Set to `1` to rebuild all cached files          |
-| `GEBCO_URL`        | GEBCO 2025         | Override the download URL                       |
+| `GEBCO_YEAR`       | `2026`             | GEBCO grid release year (drives the source URL) |
 
 ## Data sources
 
@@ -103,8 +110,8 @@ See [RESEARCH.md](./RESEARCH.md) for the full research summary.
 
 Scripts: MIT. Output data inherits GEBCO's terms (public domain, attribution required).
 
-Attribution: _GEBCO Compilation Group (2025) GEBCO 2025 Grid
-(doi:10.5285/37c52e96-24ea-67ce-e063-7086abc05f29)_
+Attribution: _GEBCO Bathymetric Compilation Group 2026 (2026) The GEBCO_2026 Grid
+(doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa)_
 
 ## Prior Art
 

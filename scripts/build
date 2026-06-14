@@ -2,12 +2,12 @@
 # Run the full GEBCO → tile pipeline.
 #
 # Usage:
-#   BBOX="-85,20,-70,35" ./scripts/build  # Bahamas
-#   BBOX="-82,24,-65,45" ./scripts/build  # US East Coast
+#   ./scripts/build                        # full global
+#   BBOX="-85,20,-70,35" ./scripts/build   # Bahamas (regional extract)
 #
 # Environment variables:
-#   BBOX        Bounding box "west,south,east,north" (required)
-#   MAX_ZOOM    Maximum tile zoom level (default: 14)
+#   BBOX        Bounding box "west,south,east,north" (empty = global)
+#   MAX_ZOOM    Maximum contour tile zoom level (default: 9)
 #   THREADS     Parallel processing threads (default: nproc)
 #   FORCE       Set to 1 to rebuild all cached files
 
@@ -15,69 +15,30 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/config.sh"
-check_deps gdal_contour gdal_translate gdalwarp ogr2ogr tippecanoe
 
-if [[ -z "${BBOX}" ]]; then
-  echo "ERROR: BBOX is required. Set BBOX=\"west,south,east,north\"."
-  exit 1
-fi
-
-SUFFIX="_${BBOX}"
+SUFFIX="${BBOX:+_${BBOX}}"
 
 echo "╔══════════════════════════════════════════════════════════╗"
 echo "║  GEBCO → Tiles Pipeline                                 ║"
 echo "╚══════════════════════════════════════════════════════════╝"
 echo ""
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Step 1: Download & clip
-# ═══════════════════════════════════════════════════════════════════════════════
+# Step 1: Download & clip (global if BBOX is empty).
 echo "── Step 1: Download GEBCO data ─────────────────────────────"
 INPUT_TIF=$("${SCRIPT_DIR}/download")
 echo ""
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Step 2: Build Terrain-RGB tiles
-# ═══════════════════════════════════════════════════════════════════════════════
+# Step 2: Terrain-RGB tiles. Each step is self-contained and writes its own
+# PMTiles to output/ — the CI workflow runs terrain and contour as separate jobs.
 echo "── Step 2: Build Terrain-RGB tiles ───────────────────────────"
 "${SCRIPT_DIR}/terrain" "${INPUT_TIF}"
 echo ""
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Step 3: Generate contour tiles
-# ═══════════════════════════════════════════════════════════════════════════════
+# Step 3: Contour vector tiles.
 echo "── Step 3: Generate contour tiles ────────────────────────────"
-CONTOURS_FGB="${WORK_DIR}/contours_enriched${SUFFIX}.fgb"
-"${SCRIPT_DIR}/contour" "${INPUT_TIF}" "${CONTOURS_FGB}"
-
-CONTOUR_PMTILES="${OUTPUT_DIR}/gebco-contours${SUFFIX}.pmtiles"
-if cached "${CONTOUR_PMTILES}"; then
-  log "Contour tiles already exist: ${CONTOUR_PMTILES}"
-else
-  log "Building contour vector tiles (z0–${MAX_ZOOM})..."
-  tippecanoe \
-    -o "${CONTOUR_PMTILES}" \
-    -f \
-    -l contours \
-    -n "GEBCO Bathymetric Contours" \
-    -A '<a href="https://www.gebco.net">GEBCO</a>' \
-    -N "Bathymetric contour lines derived from the GEBCO grid." \
-    -Z 0 -z "${MAX_ZOOM}" -P -q \
-    -y depth_m -y depth_abs_m \
-    -j '{
-      "*": [
-        "any",
-        ["all", ["<=", "$zoom", 4],  ["<=", "depth_m", -1000]],
-        ["all", ["<=", "$zoom", 6],  ["<=", "depth_m", -200]],
-        ["all", ["<=", "$zoom", 8],  ["<=", "depth_m", -50]],
-        [">=", "$zoom", 9]
-      ]
-    }' \
-    "${CONTOURS_FGB}"
-  log "Contour tiles: ${CONTOUR_PMTILES} ($(du -h "${CONTOUR_PMTILES}" | cut -f1))"
-fi
+"${SCRIPT_DIR}/contour" "${INPUT_TIF}"
 
 echo ""
 echo "═══ Pipeline complete ═══"
-log "  Terrain: ${OUTPUT_DIR}/terrain-rgb${SUFFIX}.pmtiles"
-log "  Contours: ${OUTPUT_DIR}/gebco-contours${SUFFIX}.pmtiles"
+log "  Terrain: ${OUTPUT_DIR}/terrain${SUFFIX}.pmtiles"
+log "  Contours: ${OUTPUT_DIR}/contours${SUFFIX}.pmtiles"

@@ -1,42 +1,29 @@
 #!/usr/bin/env bash
-# Generate bathymetric contour lines with non-uniform intervals.
+# Generate bathymetric contour vector tiles with non-uniform intervals.
 #
-# Upsamples the DEM 2x with cubicspline to eliminate grid stairstepping,
-# generates contours at specific depth levels defined in config.sh, then
-# applies Chaikin corner-cutting for naturally curved lines.
-#
-# Outputs an enriched FlatGeobuf file. Use scripts/build for tiled processing
-# and PMTiles generation.
+# Generates contours at specific depth levels defined in config.sh, applies
+# Chaikin corner-cutting for naturally curved lines, then tiles to PMTiles.
 #
 # Usage:
-#   ./scripts/contour input.tif [output.fgb]
+#   ./scripts/contour [input.tif]
 
 source "$(dirname "$0")/config.sh"
-check_deps gdal_contour gdalwarp ogr2ogr
+check_deps gdal_contour ogr2ogr tippecanoe
 
 SCRIPT_DIR="$(dirname "$0")"
-INPUT_TIF="${1:?Usage: contour input.tif [output.fgb]}"
-OUTPUT_FGB="${2:-${WORK_DIR}/contours_enriched.fgb}"
+resolve_input_dem "${1:-}"
+OUTPUT_FGB="${WORK_DIR}/contours_enriched${SUFFIX}.fgb"
 
-# Set SLOPE_SMOOTH=1 to run slope-selective DEM smoothing before contouring.
-# This blurs flat areas (ocean floor) while preserving detail in steep terrain.
-# See scripts/smooth-dem for tuning parameters.
+# Set SKIP_SLOPE_SMOOTH=1 to skip slope-selective DEM smoothing before contouring.
+# Smoothing blurs flat areas (ocean floor) while preserving detail in steep
+# terrain. See scripts/smooth-dem for tuning parameters.
 SKIP_SLOPE_SMOOTH="${SKIP_SLOPE_SMOOTH:-}"
-SKIP_UPSAMPLE="${SKIP_UPSAMPLE:-}"
 SKIP_CHAIKIN="${SKIP_CHAIKIN:-}"
 
 log "Input DEM: ${INPUT_TIF}"
 
-# ─── Step 1: Upsample DEM ────────────────────────────────────────────────────
-UPSAMPLED="${OUTPUT_FGB%.fgb}_upsampled.tif"
-if [[ -n "${SKIP_UPSAMPLE}" ]]; then
-  UPSAMPLED="${INPUT_TIF}"
-  log "Skipping upsample"
-else
-  upsample_dem "${INPUT_TIF}" "${UPSAMPLED}"
-fi
-
-# ─── Step 1b: Slope-selective DEM smoothing (optional) ───────────────────────
+# ─── Step 1: Slope-selective DEM smoothing (optional, default on) ────────────
+DEM="${INPUT_TIF}"
 if [[ -z "${SKIP_SLOPE_SMOOTH}" ]]; then
   SMOOTHED="${OUTPUT_FGB%.fgb}_smoothed.tif"
   if cached "${SMOOTHED}"; then
@@ -44,9 +31,9 @@ if [[ -z "${SKIP_SLOPE_SMOOTH}" ]]; then
   else
     rm -f "${SMOOTHED}"
     log "Applying slope-selective smoothing..."
-    "${SCRIPT_DIR}/smooth-dem" "${UPSAMPLED}" "${SMOOTHED}"
+    "${SCRIPT_DIR}/smooth-dem" "${DEM}" "${SMOOTHED}"
   fi
-  UPSAMPLED="${SMOOTHED}"
+  DEM="${SMOOTHED}"
 fi
 
 # ─── Step 2: Generate contours at fixed levels ───────────────────────────────
@@ -58,7 +45,7 @@ else
   rm -f "${CONTOURS_RAW}"
   log "Generating contours..."
   gdal_contour -fl ${CONTOUR_LEVELS} -a depth_m -f FlatGeobuf \
-    "${UPSAMPLED}" "${CONTOURS_RAW}"
+    "${DEM}" "${CONTOURS_RAW}"
   COUNT=$(ogrinfo -al -so "${CONTOURS_RAW}" 2>/dev/null | grep "Feature Count" | awk '{print $NF}')
   log "  → ${COUNT} features"
 fi
@@ -98,7 +85,36 @@ else
   log "  → ${COUNT} ocean features"
 fi
 
-# Clean up intermediates
-rm -f "${UPSAMPLED}" "${CONTOURS_RAW}" "${CONTOURS_SMOOTH}"
+# Clean up intermediates (never the input DEM)
+rm -f "${CONTOURS_RAW}" "${CONTOURS_SMOOTH}"
+[[ -n "${SKIP_SLOPE_SMOOTH}" ]] || rm -f "${SMOOTHED}"
 
-log "Contours: ${OUTPUT_FGB}"
+# ─── Step 5: Tile to PMTiles ─────────────────────────────────────────────────
+CONTOUR_PMTILES="${OUTPUT_DIR}/contours${SUFFIX}.pmtiles"
+if cached "${CONTOUR_PMTILES}"; then
+  log "Contour tiles already exist: ${CONTOUR_PMTILES}"
+else
+  log "Building contour vector tiles (z0–${MAX_ZOOM})..."
+  tippecanoe \
+    -o "${CONTOUR_PMTILES}" \
+    -f \
+    -l contours \
+    -n "GEBCO Bathymetric Contours" \
+    -A '<a href="https://www.gebco.net">GEBCO</a>' \
+    -N "Bathymetric contour lines derived from the GEBCO grid." \
+    -Z 0 -z "${MAX_ZOOM}" -P -q \
+    -y depth_m -y depth_abs_m \
+    -j '{
+      "*": [
+        "any",
+        ["all", ["<=", "$zoom", 4],  ["<=", "depth_m", -1000]],
+        ["all", ["<=", "$zoom", 6],  ["<=", "depth_m", -200]],
+        ["all", ["<=", "$zoom", 8],  ["<=", "depth_m", -50]],
+        [">=", "$zoom", 9]
+      ]
+    }' \
+    "${OUTPUT_FGB}"
+  log "Contour tiles: ${CONTOUR_PMTILES} ($(du -h "${CONTOUR_PMTILES}" | cut -f1))"
+fi
+
+log "Contours: ${CONTOUR_PMTILES}"

@@ -14,7 +14,6 @@ check_deps curl gdal_translate gdalbuildvrt jq
 # ─── Resolve GEBCO source ─────────────────────────────────────────────────────
 # The archive may contain a single global TIF or multiple sub-grid tiles.
 # We check for a VRT (virtual mosaic) first, then a single TIF.
-GEBCO_VRT="${DATA_DIR}/gebco_2025.vrt"
 
 if [[ -f "${GEBCO_VRT}" ]]; then
   GEBCO_SRC="${GEBCO_VRT}"

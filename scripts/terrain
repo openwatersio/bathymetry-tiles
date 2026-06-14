@@ -14,7 +14,7 @@
 # Encoding: Mapbox Terrain-RGB (height = -10000 + (R*65536 + G*256 + B) * 0.1)
 
 source "$(dirname "$0")/config.sh"
-check_deps rio gdal_edit.py gdalwarp pmtiles
+check_deps rio gdal_edit.py pmtiles
 
 # Activate the project venv if it exists (for rio-rgbify).
 if [[ -f "${PROJECT_DIR}/.venv/bin/activate" ]]; then
@@ -23,13 +23,10 @@ fi
 
 resolve_input_dem "${1:-}"
 
-# ─── Upsample DEM ───────────────────────────────────────────────────────────
-UPSAMPLED="${WORK_DIR}/gebco_upsampled${SUFFIX}.tif"
-upsample_dem "${INPUT_TIF}" "${UPSAMPLED}"
-
 # ─── Prepare DEM for encoding ────────────────────────────────────────────────
 # Remove NoData metadata — rio-rgbify encodes NoData pixels as valid elevation
 # values, producing artifacts. Work on a copy to avoid modifying the original.
+# rio-rgbify resamples the source per-tile at each zoom, so no upsample needed.
 PREPARED="${WORK_DIR}/gebco_prepared${SUFFIX}.tif"
 
 if cached "${PREPARED}"; then
@@ -37,7 +34,7 @@ if cached "${PREPARED}"; then
 else
   rm -f "${PREPARED}"
   log "Preparing DEM (unsetting NoData)..."
-  cp "${UPSAMPLED}" "${PREPARED}"
+  cp "${INPUT_TIF}" "${PREPARED}"
   gdal_edit.py -unsetnodata "${PREPARED}"
   log "Prepared: ${PREPARED}"
 fi
@@ -67,7 +64,7 @@ else
 fi
 
 # ─── Convert to PMTiles ──────────────────────────────────────────────────────
-TERRAIN_PMTILES="${OUTPUT_DIR}/terrain-rgb${BBOX:+_${BBOX}}.pmtiles"
+TERRAIN_PMTILES="${OUTPUT_DIR}/terrain${BBOX:+_${BBOX}}.pmtiles"
 
 if cached "${TERRAIN_PMTILES}"; then
   log "PMTiles already exists: ${TERRAIN_PMTILES}"

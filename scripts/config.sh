@@ -13,12 +13,13 @@ OUTPUT_DIR="${PROJECT_DIR}/output"
 mkdir -p "${DATA_DIR}" "${WORK_DIR}" "${OUTPUT_DIR}"
 
 # ─── GEBCO source ─────────────────────────────────────────────────────────────
-# GEBCO 2025 GeoTIFF — full global grid.
-# Download from https://www.gebco.net/data-products-gridded-bathymetry-data/gebco2025-grid
-# or use the download script. The file is ~7.5 GB uncompressed.
-GEBCO_URL="${GEBCO_URL:-https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2025/ice_surface_elevation/geotiff/gebco_2025_geotiff.zip}"
-GEBCO_ZIP="${DATA_DIR}/gebco_2025.zip"
-GEBCO_TIF="${DATA_DIR}/gebco_2025.tif"
+# GEBCO GeoTIFF — full global grid (~7.5 GB uncompressed, 4.24 GB zipped).
+# https://www.gebco.net/data-products-gridded-bathymetry-data/gebco2026-grid
+GEBCO_YEAR="${GEBCO_YEAR:-2026}"
+GEBCO_URL="${GEBCO_URL:-https://dap.ceda.ac.uk/bodc/gebco/global/gebco_${GEBCO_YEAR}/ice_surface_elevation/geotiff/gebco_${GEBCO_YEAR}_geotiff.zip}"
+GEBCO_ZIP="${DATA_DIR}/gebco_${GEBCO_YEAR}.zip"
+GEBCO_TIF="${DATA_DIR}/gebco_${GEBCO_YEAR}.tif"
+GEBCO_VRT="${DATA_DIR}/gebco_${GEBCO_YEAR}.vrt"
 
 # ─── Bounding box (optional, for regional extracts) ──────────────────────────
 # Format: "west,south,east,north"
@@ -46,8 +47,10 @@ FORCE="${FORCE:-}"
 
 THREADS="${THREADS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
-# Tippecanoe max zoom for the output tileset.
-MAX_ZOOM="${MAX_ZOOM:-14}"
+# Tippecanoe max zoom for the contour tileset.
+# GEBCO is 15 arc-sec (~463 m/px at the equator), which is native around z8.4,
+# so z9 is the real resolution ceiling. MapLibre overzooms past it for display.
+MAX_ZOOM="${MAX_ZOOM:-9}"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 log() { echo "[$(date '+%H:%M:%S')] $*" >&2; }
@@ -85,28 +88,4 @@ resolve_input_dem() {
   fi
   SUFFIX="${BBOX:+_${BBOX}}"
   log "Input DEM: ${INPUT_TIF}"
-}
-
-# Upsample a DEM 2x with cubicspline resampling.
-# Creates a C2-smooth surface through pixel centers, eliminating grid
-# stairstepping in derived products (contours, depth shading).
-# Usage: upsample_dem input.tif output.tif
-upsample_dem() {
-  local input="$1" output="$2"
-  if cached "${output}"; then
-    log "Upsampled DEM already exists"
-    return
-  fi
-  rm -f "${output}"
-  log "Upsampling DEM 2x with cubicspline..."
-  local res
-  res=$(gdalinfo -json "${input}" | jq -r '(.geoTransform[1,5] | fabs / 2) | tostring' | tr '\n' ' ')
-  gdalwarp \
-    -tr ${res} \
-    -r cubicspline \
-    -wo NUM_THREADS=ALL_CPUS \
-    -overwrite \
-    "${input}" \
-    "${output}"
-  log "  → ${output}"
 }
