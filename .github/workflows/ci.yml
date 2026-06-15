@@ -40,6 +40,12 @@ env:
   # Keep the year here in sync with GEBCO_YEAR. Local dev still uses CEDA.
   GEBCO_URL: https://tiles.openwaters.io/source/gebco_2026_geotiff.zip
 
+# Supersede in-progress runs on the same branch when a new push lands — but
+# never cancel a release publish mid-flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
 jobs:
   # Download + extract the GEBCO grid once and cache the *extracted* tifs/VRT
   # (not just the zip), so the ~30 shard jobs each skip the unzip+VRT and only
@@ -120,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: { contents: read, packages: read }
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         cell: ${{ fromJSON(needs.plan.outputs.cells) }}
         step: [terrain, contour]
@@ -166,7 +172,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: { contents: read, packages: read }
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         step: [terrain, contour]
     steps:
