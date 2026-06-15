@@ -9,7 +9,7 @@
 #   id | url | datum_offset_m | priority | bbox | max_zoom
 
 source "$(dirname "$0")/config.sh"
-check_deps gdalwarp gdal_calc.py curl
+check_deps gdalwarp gdal_calc.py gdalsrsinfo curl
 
 id="${1:?Usage: ingest <source-id>}"
 row="$(sources_rows | awk -F'|' -v id="$id" '$1==id{print; exit}')"
@@ -23,7 +23,14 @@ if cached "${NORM}"; then
 fi
 
 # ─── Fetch ───────────────────────────────────────────────────────────────────
-if [[ "${url}" == http*://* ]]; then
+if [[ "${url}" == s3://* ]]; then
+  # Read directly from public S3 via GDAL's /vsis3/. The bbox clip below pulls
+  # only the intersecting tiles, so pointing at a dataset's master .vrt costs no
+  # bulk download — GDAL streams just the tiles that overlap the region.
+  export AWS_NO_SIGN_REQUEST=YES
+  SRC="/vsis3/${url#s3://}"
+  log "Reading ${id} from public S3: ${url}"
+elif [[ "${url}" == http*://* ]]; then
   SRC="${DATA_DIR}/${id}.${url##*.}"
   if cached "${SRC}"; then
     log "Source already downloaded: ${SRC}"
@@ -41,10 +48,16 @@ IFS=',' read -r W S E N <<< "${bbox}"
 WARP="${WORK_DIR}/${id}_warp.tif"
 rm -f "${WARP}"
 log "Reprojecting ${id} to EPSG:4326 over ${bbox}..."
+# Use the source's HORIZONTAL CRS as -s_srs (proj4 drops any vertical datum) so
+# gdalwarp doesn't apply a vertical/geoid shift — e.g. CUDEM's NAVD88 would be
+# transformed to ellipsoidal height (~tens of metres in mid-latitudes), pushing
+# land negative. We handle vertical ourselves via datum_offset_m below.
 # -ot Float32 keeps types uniform across sources so gdalbuildvrt can mosaic them.
 # Source nodata propagates to the output so the base shows through any gaps.
-gdalwarp -t_srs EPSG:4326 -te "${W}" "${S}" "${E}" "${N}" \
-  -r bilinear -ot Float32 -overwrite "${SRC}" "${WARP}" >&2
+SRC_HCRS="$(gdalsrsinfo -o proj4 --single-line "${SRC}" 2>/dev/null)"
+warp_args=(-t_srs EPSG:4326 -te "${W}" "${S}" "${E}" "${N}" -r bilinear -ot Float32 -overwrite)
+[[ -n "${SRC_HCRS}" ]] && warp_args=(-s_srs "${SRC_HCRS}" "${warp_args[@]}")
+gdalwarp "${warp_args[@]}" "${SRC}" "${WARP}" >&2
 
 # ─── Apply constant datum offset ─────────────────────────────────────────────
 # ponytail: a single offset to ~MSL, not full VDatum. Revisit in Phase 3 if seams show.
