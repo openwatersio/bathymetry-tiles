@@ -58,15 +58,6 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v6
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
       - name: Cache extracted GEBCO grid
         uses: actions/cache@v4
         with:
@@ -116,7 +107,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - id: gen
-        run: echo "cells=$(python3 scripts/shard-cells "${SHARD_COLS}" "${SHARD_ROWS}" "${SPLIT_ZOOM}")" >> "$GITHUB_OUTPUT"
+        run: echo "cells=$(scripts/shard-cells "${SHARD_COLS}" "${SHARD_ROWS}" "${SPLIT_ZOOM}")" >> "$GITHUB_OUTPUT"
 
   # High-zoom detail, sharded geographically: each cell builds z(SPLIT_ZOOM)–MAX_ZOOM
   # terrain + contour for its bbox. Tiles are disjoint across cells (tile-aligned),
@@ -132,9 +123,6 @@ jobs:
         step: [terrain, contour]
     steps:
       - uses: actions/checkout@v6
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with: { tool-cache: true, android: true, dotnet: true, haskell: true, large-packages: true, swap-storage: true }
       - name: Cache extracted GEBCO grid
         uses: actions/cache@v4
         with:
@@ -177,9 +165,6 @@ jobs:
         step: [terrain, contour]
     steps:
       - uses: actions/checkout@v6
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with: { tool-cache: true, android: true, dotnet: true, haskell: true, large-packages: true, swap-storage: true }
       - name: Cache extracted GEBCO grid
         uses: actions/cache@v4
         with:
