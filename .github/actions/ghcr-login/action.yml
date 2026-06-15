@@ -1,0 +1,16 @@
+name: GHCR login (with retry)
+description: Log in to ghcr.io, retrying the occasionally-flaky token endpoint.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GHCR_TOKEN: ${{ github.token }}
+        GHCR_USER: ${{ github.actor }}
+      run: |
+        for i in 1 2 3 4 5; do
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin && exit 0
+          echo "ghcr login attempt $i failed; retrying in $((i * 5))s" >&2
+          sleep $((i * 5))
+        done
+        exit 1
