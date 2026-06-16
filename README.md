@@ -35,9 +35,9 @@ to inspect it.
 ## In the container
 
 ```bash
-docker build -t gebco-tiles .
+docker build -t bathymetry-tiles .
 docker run --rm -v "$(pwd)/pipelines/store:/app/pipelines/store" \
-  gebco-tiles just planet          # or: just source <id> / just sources
+  bathymetry-tiles just planet          # or: just source <id> / just sources
 ```
 
 Set `BBOX="W,S,E,N"` for a regional build. `just --list` shows all recipes.
