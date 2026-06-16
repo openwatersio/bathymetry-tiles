@@ -120,20 +120,21 @@ function intersects(a: number[], b: number[]): boolean {
 // ── Terrarium nearest-neighbour overzoom ────────────────────────────────────
 async function overzoom(
   env: Env,
-  planetMax: number,
+  srcFile: string,
+  srcMax: number,
   z: number,
   x: number,
   y: number,
-): Promise<ArrayBuffer> {
-  const levels = z - planetMax;
+): Promise<ArrayBuffer | null> {
+  const levels = z - srcMax;
   const span = 1 << levels; // sub-tiles per axis within the ancestor
   const px = x >> levels,
-    py = y >> levels; // ancestor tile at planetMax
+    py = y >> levels; // ancestor tile at srcMax
   const subX = x - (px << levels),
     subY = y - (py << levels);
 
-  const parent = await tile(env, "planet.pmtiles", planetMax, px, py);
-  if (!parent) return transparentTile(); // ancestor itself missing (outside data)
+  const parent = await tile(env, srcFile, srcMax, px, py);
+  if (!parent) return null; // ancestor missing in this source; caller tries the next
 
   await ensureCodec();
   const img = await decodeWebp(parent); // {data: Uint8ClampedArray RGBA, width, height}
@@ -195,9 +196,13 @@ const MVT = {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const noTile = () => new Response(null, { status: 204, headers: CORS });
-    const m = new URL(req.url).pathname.match(
-      /^\/bathymetry\/(terrain|contours)\/(\d+)\/(\d+)\/(\d+)/,
-    );
+    const path = new URL(req.url).pathname;
+    if (path === "/bathymetry/manifest.json") {
+      return new Response(JSON.stringify(await manifest(env)), {
+        headers: { "content-type": "application/json", ...CORS },
+      });
+    }
+    const m = path.match(/^\/bathymetry\/(terrain|contours)\/(\d+)\/(\d+)\/(\d+)/);
     if (!m)
       return new Response("usage: /bathymetry/{terrain,contours}/{z}/{x}/{y}", {
         status: 404,
@@ -220,16 +225,21 @@ export default {
       const t = await tile(env, "planet.pmtiles", z, x, y);
       return t ? new Response(t, { headers: WEBP }) : transparentResponse();
     }
-    // deepest-first: serve the highest-res overlay that actually has this tile
+    // Deepest-first: serve (or overzoom) the highest-res source covering this tile,
+    // so above an overlay's native zoom we upscale THAT overlay's regional detail
+    // instead of the coarse planet.
     const tb = tileBounds(z, x, y);
     for (const s of mf.sources) {
-      if (z > s.max_zoom || !intersects(tb, s.bbox)) continue;
-      const t = await tile(env, s.file, z, x, y);
+      if (!intersects(tb, s.bbox)) continue;
+      const t =
+        z <= s.max_zoom
+          ? await tile(env, s.file, z, x, y)
+          : await overzoom(env, s.file, s.max_zoom, z, x, y);
       if (t) return new Response(t, { headers: WEBP });
     }
+    // No overlay covers it: overzoom the planet, or transparent if even that's absent.
     if (!transparentCache) transparentCache = await _makeTransparent();
-    return new Response(await overzoom(env, mf.planet.max_zoom, z, x, y), {
-      headers: WEBP,
-    });
+    const planetOz = await overzoom(env, "planet.pmtiles", mf.planet.max_zoom, z, x, y);
+    return new Response(planetOz ?? transparentCache, { headers: WEBP });
   },
 };

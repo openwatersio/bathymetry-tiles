@@ -14,6 +14,19 @@ const terrainTiles = `${tilesBase}/bathymetry/terrain/{z}/{x}/{y}`;
 const contourTiles = `${tilesBase}/bathymetry/contours/{z}/{x}/{y}`;
 const MAX_ZOOM = 13; // deepest source; the Worker overzooms the base for the rest
 
+// The Worker overzooms the raster terrain server-side up to MAX_ZOOM, but vector
+// contours are a plain passthrough — so tell MapLibre their true max zoom (the
+// deepest source in the manifest) and it overzooms them client-side above that.
+const manifest = await fetch(`${tilesBase}/bathymetry/manifest.json`)
+  .then((r) => r.json())
+  .catch(() => null);
+const contourMax = manifest
+  ? Math.max(
+      manifest.planet.max_zoom,
+      ...manifest.sources.map((s) => s.max_zoom),
+    )
+  : MAX_ZOOM;
+
 // ─── Map style ────────────────────────────────────────────────────────────
 const style = {
   version: 8,
@@ -38,7 +51,7 @@ const style = {
     contours: {
       type: "vector",
       tiles: [contourTiles],
-      maxzoom: MAX_ZOOM,
+      maxzoom: contourMax,
     },
   },
   layers: [
