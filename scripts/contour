@@ -94,6 +94,9 @@ else
   log "Smoothing contour geometries..."
   python3 "${SCRIPT_DIR}/smooth-contours" \
     "${CONTOURS_RAW}" "${CONTOURS_SMOOTH}" 0.0002 5
+  # Free the raw FGB now so it doesn't coexist with smoothed + enriched during
+  # Step 4 (3 large copies overflow disk on ocean-heavy shards).
+  rm -f "${CONTOURS_RAW}"
 fi
 
 # ─── Step 4: Enrich attributes ───────────────────────────────────────────────

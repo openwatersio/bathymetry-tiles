@@ -118,6 +118,18 @@ jobs:
         step: [terrain, contour]
     steps:
       - uses: actions/checkout@v6
+      # Ocean-heavy contour shards stage large intermediate FlatGeobufs; reclaim
+      # disk for them. Terrain cells are small and skip this.
+      - name: Free disk space
+        if: matrix.step == 'contour'
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
       - name: Cache extracted GEBCO grid
         uses: actions/cache@v4
         with:
