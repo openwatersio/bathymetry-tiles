@@ -1,9 +1,9 @@
 """Plain HTTP download of a source's file_list.txt URLs into store/source/<id>/.
 
 Uses requests (no shell) so query-string URLs with ``&`` work. Other access
-patterns are their own steps a recipe picks instead: source_download_s3 (/vsis3/
-clip), source_download_erddap (griddap subset), source_unzip (extract archives
-this step fetched).
+patterns are their own steps a recipe picks instead: source_register_remote
+(/vsis3/ streaming refs), source_download_erddap (griddap subset), source_unzip
+(extract archives this step fetched).
 """
 
 import os

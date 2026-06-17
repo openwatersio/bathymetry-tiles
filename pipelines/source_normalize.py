@@ -13,12 +13,12 @@ from glob import glob
 import rasterio
 
 
-# Lossless DEFLATE compression, available in any GDAL build (avoids a hard
-# dependency on the LERC codec the stock GDAL CLI may lack). The predictor is
-# chosen per file: 3 (floating-point) only works on Float32/64; integer rasters
-# (e.g. GEBCO's Int16) need 2 (horizontal differencing).
+# Lossless ZSTD compression (level 9 default): ~4% smaller than DEFLATE and
+# ~2.7x faster on GEBCO Int16, and it's in the stock Ubuntu/Homebrew GDAL builds
+# (unlike LERC). The predictor is chosen per file: 3 (floating-point) only works
+# on Float32/64; integer rasters (e.g. GEBCO's Int16) need 2 (horizontal differencing).
 COG_OPTS = ["-co", "BLOCKSIZE=512", "-co", "OVERVIEWS=NONE", "-co", "SPARSE_OK=YES",
-            "-co", "BIGTIFF=IF_NEEDED", "-co", "COMPRESS=DEFLATE"]
+            "-co", "BIGTIFF=IF_NEEDED", "-co", "COMPRESS=ZSTD", "-co", "NUM_THREADS=ALL_CPUS"]
 
 
 def predictor_for(filepath):
@@ -42,7 +42,7 @@ def normalize_file(filepath, crs, nodata):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Assign CRS/nodata and rewrite as a LERC/DEFLATE COG.")
+    p = argparse.ArgumentParser(description="Assign CRS/nodata and rewrite as a ZSTD COG.")
     p.add_argument("source")
     p.add_argument("--crs", help="horizontal CRS to assign (e.g. EPSG:4269)")
     p.add_argument("--nodata", help="nodata value to assign")
