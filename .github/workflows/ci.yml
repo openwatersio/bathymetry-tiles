@@ -39,6 +39,10 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
   AWS_DEFAULT_REGION: auto
   AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+  # R2 occasionally returns a transient 500 InternalError; the CLI default (~3 tries)
+  # gives up mid-sync. Adaptive retry + a high ceiling rides it out across every aws s3 call.
+  AWS_RETRY_MODE: adaptive
+  AWS_MAX_ATTEMPTS: "10"
 
 # Supersede in-progress runs on the same branch.
 concurrency:
