@@ -79,10 +79,11 @@ jobs:
           docker run --rm "$IMAGE:${{ github.sha }}" just test-sources
           docker run --rm "$IMAGE:${{ github.sha }}" just test-engine
 
-  # ─── Build (default branch / release / dispatch) ───────────────────────────
+  # ─── Build (default branch + dispatch; NOT release — a release just republishes
+  # the build the commit already produced on main, see publish-r2) ───────────────
   # Enumerate the sources (one dir per source) into a matrix.
   discover:
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       sources: ${{ steps.l.outputs.sources }}
@@ -361,14 +362,19 @@ jobs:
         with: { path: dist }
 
   # ─── Publish (releases only) ───────────────────────────────────────────────
-  # Promote this commit's bundles to the served year prefix (server-side copy).
+  # No rebuild — promote the build this commit already produced on main
+  # (build/<sha>/) to the served prefix (server-side copy). Release a commit that was
+  # built on main.
   publish-r2:
     if: github.event_name == 'release'
-    needs: [bundle, contour-bundle]
     runs-on: ubuntu-latest
     steps:
-      - name: Promote bundles → bathymetry/
+      - name: Promote build/${{ github.sha }} → bathymetry/
         run: |
+          if ! aws s3 ls "s3://$R2_BUCKET/build/${{ github.sha }}/manifest.json" >/dev/null 2>&1; then
+            echo "::error::No build at build/${{ github.sha }}/ — release a commit that was built on main."
+            exit 1
+          fi
           aws s3 cp "s3://$R2_BUCKET/build/${{ github.sha }}/" \
             "s3://$R2_BUCKET/bathymetry/" --recursive --exclude 'contour-shards/*'
 
