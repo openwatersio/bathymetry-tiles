@@ -56,25 +56,30 @@ contour-shard i:
 contour-merge:
     uv run python contour_run.py bundle-merge
 
-# Build the NY-harbor demo (GEBCO base + CUDEM) and seed it into the local Worker
-# R2. Requires the GEBCO grid extracted in data/ (clips it locally; no 4 GB fetch).
-# To view, run the two dev servers in separate terminals:
+# Build a regional preview into the local Worker R2: GEBCO base + the US streaming
+# sources (CUDEM, BlueTopo) clipped to BBOX, best-wins. BBOX="W,S,E,N" (default: NY
+# harbor; e.g. Chesapeake = "-76.5,37.0,-76.0,37.5"). Requires the GEBCO quadrant grids
+# in data/ (clips locally; no 4 GB fetch). View with the two dev servers in separate terminals:
 #   cd worker && npm install && npm run dev               # tile Worker on :8787
 #   VITE_TILES_BASE=http://localhost:8787 npm run dev     # Vite on :5173 (repo root)
-preview:
+preview bbox="-74.30,40.40,-73.75,40.80":
     #!/usr/bin/env bash
     set -euo pipefail
+    IFS=, read -r W S E N <<< "{{bbox}}"
+    export BBOX="{{bbox}}"
     rm -rf store/aggregation store/pmtiles store/bundle store/meta store/contour
     mkdir -p store/source/gebco
-    gdal_translate -q -projwin -74.30 40.80 -73.75 40.40 \
-      ../data/gebco_2026_n90.0_s0.0_w-90.0_e0.0_geotiff.tif store/source/gebco/gebco_0.tif
+    # GEBCO base: clip from a VRT over the quadrant grids so any BBOX works (assumes a
+    # single GEBCO vintage in data/; the glob mosaics whatever quadrants are present).
+    gdalbuildvrt -q -overwrite store/source/gebco.vrt ../data/gebco_*.tif
+    gdal_translate -q -projwin "$W" "$N" "$E" "$S" store/source/gebco.vrt store/source/gebco/gebco_0.tif
     uv run python source_bounds.py gebco
-    # CUDEM via the streaming model: register manifest tiles as /vsis3/ refs (header
-    # reads only, no download), BBOX-prefiltered to the harbor; aggregation reads the
-    # COGs straight from NOAA S3. Proves the COG-in-R2 read path end to end.
-    [ -f store/source/cudem/bounds.csv ] || \
-      BBOX="-74.30,40.40,-73.75,40.80" uv run python source_register_remote.py cudem
-    BBOX="-74.30,40.40,-73.75,40.80" just planet
+    # US streaming sources: register manifest/gpkg tiles as /vsicurl refs (header reads
+    # only, BBOX-prefiltered); aggregation range-reads the COGs straight from NOAA S3.
+    # Re-registered every run so a changed BBOX re-scopes (0 tiles outside their coverage).
+    uv run python source_register_remote_urllist.py cudem
+    uv run python source_register_remote_geopkg.py bluetopo
+    just planet
     ../worker/seed.sh
 
 # Offline self-checks (synthetic data, no network).

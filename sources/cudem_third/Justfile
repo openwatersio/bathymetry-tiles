@@ -4,4 +4,4 @@
 # Priority derives from (maxzoom, id): cudem (z13) wins over cudem_third (z12) over gebco.
 [no-cd]
 default:
-    uv run python source_register_remote.py cudem_third
+    uv run python source_register_remote_urllist.py cudem_third

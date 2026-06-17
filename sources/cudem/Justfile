@@ -4,4 +4,4 @@
 # S3. Tiles are already COGs (NAVD88 / NAD83), so no normalize/datum/tarball.
 [no-cd]
 default:
-    uv run python source_register_remote.py cudem
+    uv run python source_register_remote_urllist.py cudem

@@ -55,7 +55,7 @@ would break signed R2 reads — so everything is `/vsicurl`, never `/vsis3`).
 
 Two source shapes, one read path:
 
-- **Already-COG public bucket (CUDEM):** `source_register_remote.py` reads each tile's
+- **Already-COG public bucket (CUDEM):** `source_register_remote_urllist.py` reads each tile's
   *header* via `/vsicurl/` and writes its `bounds.csv` row with the full `/vsicurl/`
   NOAA URL as the filename. No download, no normalize, no tarball.
 - **Prepared sources (GEBCO/EMODnet/DDM):** the source stage still fetches → unzips →
@@ -87,7 +87,7 @@ bucket is the artifact) — leave for now, prune later.
 | EMODnet 2024 | ~115 m     | z11          | European seas | LAT (confirm)  | ✅ ingest (58-tile) |
 | DDM (Denmark)| 50 m       | z12          | Danish EEZ    | MSL (DKMSL2022)| ✅ ingest (`--negate`) |
 | CUDEM 1/9    | ~3.4 m     | z13          | US coast      | NAVD88         | ✅ `cudem` (942-tile manifest) |
-| BlueTopo     | 2–16 m     | z14–15       | US navigable  | MLLW           | ⬜ not built |
+| BlueTopo     | 2–16 m     | z14 (cap)    | US navigable  | MLLW/NAVD88 (per-tile) | 🟡 `bluetopo` ingest+engine built (preview/CI pending) |
 | CUDEM 1/3    | ~10 m      | z11–12       | US coast (broader) | NAVD88    | ⬜ optional coarse fill |
 | CUDEM terr.  | ~3.4 m     | z13          | HI/PR/USVI/Guam/AmSam/CNMI | NAVD88 | ⬜ own products |
 | NIWA NZ      | 250 m      | z10          | NZ EEZ        | varies         | ⬜ not built |
@@ -157,7 +157,7 @@ spot-check depths.
 
 **CUDEM is now one unified `cudem` source** (replacing the old per-window
 `cudem_ne`/`cudem_puget`). Its `file_list.txt` points at NOAA's **manifest**
-(`urllist8483.txt`) rather than data files; `source_register_remote.py` reads each
+(`urllist8483.txt`) rather than data files; `source_register_remote_urllist.py` reads each
 tile's header and registers it as a `/vsicurl/` reference (see [Source ingest](#source-ingest-vsicurl-streaming-over-public-buckets))
 — **no download**; aggregation range-reads the COGs straight off NOAA. Confirmed by
 direct S3 inspection of `s3://noaa-nos-coastal-lidar-pds/dem/NCEI_ninth_Topobathy_2014_8483/`:
@@ -196,10 +196,54 @@ when a real constraint forces it.
   model: CUDEM is registered as `/vsicurl/` NOAA references (no download) and the
   aggregate job no longer syncs `store/source`, so the 188 GB never lands. Validated
   on the harbor preview; CI confirmation pending.
-- **BlueTopo (new format work):** per-tile UTM zones (cross-zone mosaic), a
-  GeoPackage tile index, 3-band rasters, **MLLW** chart datum (real offset; VDatum
-  in Phase 5). `s3://noaa-ocs-nationalbathymetry-pds/`. Likely a new
-  `source_download_*` variant + a metadata band-select knob.
+- **BlueTopo (new format work).** `s3://noaa-ocs-nationalbathymetry-pds/` (public,
+  `--no-sign-request`), so it joins the [`/vsicurl/` streaming](#source-ingest-vsicurl-streaming-over-public-buckets)
+  model — most of the CUDEM path is reused for free. *Verified against the bucket
+  2026-06:* per-tile UTM zones (`NAD83/UTM zone N`, EPSG:269NN), 3-band Float32
+  (Elevation/Uncertainty/Contributor, NoData `nan`, band 1 is elevation, positive-up),
+  vertical datum **per-tile and mixed** (sampled tiles declare both MLLW and NAVD88).
+  Two things are genuinely new vs CUDEM:
+
+  1. **Enumeration is a GeoPackage, not a flat urllist.** No `urllist.txt` exists;
+     tiles come from `BlueTopo/_BlueTopo_Tile_Scheme/BlueTopo_Tile_Scheme_<date>.gpkg`
+     (12,719 features, **7,375** with a non-null `GeoTIFF_Link` full-`https://` URL;
+     columns `tile, GeoTIFF_Link, Resolution {2,4,8,16}m, UTM` + WGS84 geometry).
+  2. **`gdalbuildvrt` rejects heterogeneous CRS.** `aggregation_reproject.py` lumps a
+     source's whole group into one VRT; CUDEM is uniformly EPSG:4269 so it's fine, but
+     any BlueTopo aggregation tile straddling a 6°-longitude zone boundary spans two
+     UTM zones and `gdalbuildvrt` *silently drops* the off-zone tiles → holes. This is
+     the "cross-zone mosaic" work.
+
+  Already handled by the CUDEM streaming path (no work): per-tile bounds + `(maxzoom,
+  id)` priority (registration already does per-tile `transform_bounds`, and z14 puts
+  BlueTopo above CUDEM z13); no-download streaming; `merge`/`tile` read band 1 only.
+
+  **As built** (A→B→C; C was the only real engine work):
+
+  - ✅ **A. Source dir** `sources/bluetopo/` — `metadata.json` with `max_zoom: 14`,
+    `band: 1`, `mixed_crs: true` (two new default-off knobs); `file_list.txt` points at
+    the tile-scheme prefix (newest `.gpkg` resolved at register time); `Justfile` =
+    `source_register_remote_geopkg.py bluetopo`.
+  - ✅ **B. Enumeration** — the old `source_register_remote.py` **split** into a shared
+    `source_remote.py` core (`register_tiles` header-read loop → `bounds.csv`) + two
+    front-ends: `source_register_remote_urllist.py` (CUDEM flat urllist, name-based BBOX
+    prefilter) and `source_register_remote_geopkg.py` (BlueTopo: resolve newest `.gpkg` via
+    one public S3 list, read `GeoTIFF_Link WHERE NOT NULL` with geopandas, geometry ∩ `BBOX`
+    spatial prefilter). Header reads give the exact `width/height/bounds` covering needs.
+  - ✅ **C. Cross-zone + band-select** in `aggregation_reproject.py`, gated on `mixed_crs`
+    / `band`: build one `gdalbuildvrt -b 1` VRT per tile, then one `gdalwarp` reprojects+
+    mosaics the heterogeneous-CRS VRTs into 3857 (single-CRS sources keep the fast
+    single-VRT path). `nan` source-nodata → `-dstnodata -9999`. Self-check asserts a
+    two-UTM-zone mosaic keeps both zones' pixels.
+  - **D. Datum — deferred (not built).** No `--negate` (already positive-up). Streamed
+    sources skip `source_datum.py` and the datum is per-tile mixed, so a constant offset
+    can't fix it — stream raw, feather hides the seam, real fix is the Phase 5 VDatum pass.
+  - 🟡 **E. Validation** — self-checks pass; real reproject yields valid Chesapeake depths.
+    **Surfaced a scaling limit:** the per-macrotile DEM at z14 (a z8 macrotile = 32768px ≈
+    4 GB/band) OOM'd `smooth` (whole-array read) → `smooth.py` rewritten to overlapping
+    windows (halo = gaussian truncation radius), peak memory now one padded block. CI
+    per-source matrix picks up `sources/bluetopo/` automatically (geopandas/pyogrio already
+    deps); split the manifest by coast later if the overlay gets too big.
 - **Optional CUDEM extensions:** the **1/3 arc-sec** product (`NCEI_third_Topobathy_2014_8580`,
   ~10 m, broader/cheaper) as a coarse fill where 1/9 is absent; the **territory**
   products (Hawaii, PuertoRico, USVI, Guam, AmSam, CNMI — each its own
@@ -227,7 +271,17 @@ the cap-zoom tile inside a regional footprint already shows that source.
 
 - **Proper VDatum vertical transforms** replacing constant offsets, where Phase
   2–3 seams prove inadequate. The seam is isolated in `source_datum.py` — swap the
-  constant for a spatially-varying separation grid in that one step.
+  constant for a spatially-varying separation grid in that one step. **Caveat:
+  streamed sources skip `source_datum.py`.** CUDEM/BlueTopo register as `/vsicurl/`
+  references and are range-read straight off NOAA at reproject time — no local bytes,
+  so there's no value-transform step to swap. BlueTopo especially needs this (per-tile
+  MLLW/NAVD88, varies by tile). Two ways to reach them: (a) apply the separation grid
+  on the fly in the aggregation reproject (a value-add pass after warp, keeps the
+  no-download model — preferred); or worst case (b) drop the pure-streaming model for
+  these sources and add a step that re-processes each tile through `source_datum.py`
+  into our own R2 bucket (datum-corrected COGs), then register *those* `/vsicurl/`
+  URLs instead. (a) keeps zero-disk; (b) costs the 188 GB + BlueTopo storage but
+  reuses the existing per-file transform verbatim.
 - **GEBCO TID-based quality masking** — prefer measured cells over interpolated
   when blending (would also feed a per-pixel provenance band off the merge).
 - **Source-footprint provenance layer** — tile straight from the coverage polygons
@@ -259,6 +313,6 @@ constant offset vs full VDatum at these zooms.
 | 0     | GEBCO base                         | ✅ done |
 | 1     | Abstraction + 1-region proof       | ✅ done (rewritten) |
 | 2     | European: EMODnet + DDM (seamap)   | 🟡 ingest done; planet build + seamap cutover left |
-| 3     | US: CUDEM full + BlueTopo          | 🟡 CUDEM unified source done; CI disk strategy + BlueTopo left |
+| 3     | US: CUDEM full + BlueTopo          | 🟡 CUDEM + BlueTopo ingest+engine done; preview/CI confirmation left |
 | 4     | Unify GEBCO as a source            | ✅ done (free) |
 | 5     | VDatum, TID, provenance, CSB, lakes| ongoing |
