@@ -1,8 +1,10 @@
 /**
  * Unified bathymetry tile endpoint.
  *
- *   GET /bathymetry/terrain/{z}/{x}/{y}    → Terrarium WebP (terrain)
- *   GET /bathymetry/contours/{z}/{x}/{y}   → MVT (vector contours)
+ *   GET /bathymetry/{z}/{x}/{y}.webp  (or .png)  → Terrarium WebP (raster terrain)
+ *   GET /bathymetry/{z}/{x}/{y}.pbf   (or .mvt)  → MVT (vector — contours, more layers later)
+ *
+ * Extension picks the representation: webp/png → raster, pbf/mvt → vector.
  *
  * Reads the bundles published to R2 (planet.pmtiles + per-source <id>.pmtiles +
  * contours.pmtiles + manifest.json) and resolves per tile:
@@ -37,7 +39,8 @@ function ensureCodec(): Promise<void> {
 
 export interface Env {
   TILES: R2Bucket;
-  TILES_PREFIX?: string; // e.g. "bathymetry/"; default ""
+  TILES_PREFIX?: string; // R2 key prefix, e.g. "bathymetry/"; default ""
+  BASE_PATH?: string; // URL mount path = the Cloudflare route prefix; default "/bathymetry"
 }
 
 interface BundleMeta {
@@ -49,6 +52,7 @@ interface BundleMeta {
 interface Manifest {
   planet: BundleMeta;
   sources: (BundleMeta & { id: string })[]; // pre-sorted deepest-first
+  attribution?: string; // combined HTML credit for every contributing dataset
 }
 
 const TILE = 512;
@@ -196,29 +200,82 @@ const MVT = {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const noTile = () => new Response(null, { status: 204, headers: CORS });
-    const path = new URL(req.url).pathname;
-    if (path === "/bathymetry/manifest.json") {
-      return new Response(JSON.stringify(await manifest(env)), {
+    const url = new URL(req.url);
+    const path = url.pathname;
+    const json = (o: unknown) =>
+      new Response(JSON.stringify(o), {
         headers: { "content-type": "application/json", ...CORS },
       });
+    // The mount prefix (the Cloudflare route) is present in prod and absent in
+    // dev at root — tolerate both: strip it when present, else treat the path as
+    // already relative. `mount` is echoed back into TileJSON tile URLs so they
+    // stay correct either way.
+    const base = (env.BASE_PATH ?? "/bathymetry").replace(/\/+$/, "");
+    const mounted =
+      base !== "" && (path === base || path.startsWith(base + "/"));
+    const rel = mounted ? path.slice(base.length) : path;
+    const mount = mounted ? base : "";
+
+    if (rel === "/manifest.json") {
+      return json(await manifest(env));
     }
-    const m = path.match(/^\/bathymetry\/(terrain|contours)\/(\d+)\/(\d+)\/(\d+)/);
+    // TileJSON per representation — point MapLibre/Mapbox at these directly.
+    // A TileJSON is single-format, so raster and vector get separate docs.
+    if (rel === "/raster.json") {
+      const mf = await manifest(env);
+      return json({
+        tilejson: "3.0.0",
+        name: "Open Waters Bathymetry (raster)",
+        tiles: [`${url.origin}${mount}/{z}/{x}/{y}.webp`],
+        minzoom: mf.planet.min_zoom,
+        // Worker overzooms past native data, so the served ceiling is the deepest source.
+        maxzoom: Math.max(
+          mf.planet.max_zoom,
+          ...mf.sources.map((s) => s.max_zoom),
+        ),
+        bounds: mf.planet.bbox,
+        encoding: "terrarium",
+        attribution: mf.attribution ?? "",
+      });
+    }
+    if (rel === "/vector.json") {
+      const mf = await manifest(env);
+      const h = await pm(env, "contours.pmtiles").getHeader();
+      return json({
+        tilejson: "3.0.0",
+        name: "Open Waters Bathymetry",
+        tiles: [`${url.origin}${mount}/{z}/{x}/{y}.pbf`],
+        minzoom: h.minZoom,
+        maxzoom: h.maxZoom,
+        bounds: [h.minLon, h.minLat, h.maxLon, h.maxLat],
+        vector_layers: [
+          {
+            id: "contours",
+            fields: { depth_m: "Number", depth_abs_m: "Number" },
+          },
+        ],
+        attribution: mf.attribution ?? "",
+      });
+    }
+    // Tiles: extension selects representation — webp/png → raster, pbf/mvt → vector.
+    const m = rel.match(/^\/(\d+)\/(\d+)\/(\d+)\.(png|webp|pbf|mvt)$/);
     if (!m)
-      return new Response("usage: /bathymetry/{terrain,contours}/{z}/{x}/{y}", {
+      return new Response(`usage: ${base}/{z}/{x}/{y}.{webp,pbf}`, {
         status: 404,
         headers: CORS,
       });
-    const layer = m[1];
-    const z = +m[2],
-      x = +m[3],
-      y = +m[4];
+    const z = +m[1],
+      x = +m[2],
+      y = +m[3];
+    const ext = m[4];
+
+    const isVector = ext === "pbf" || ext === "mvt";
 
     // Out-of-range x/y (the pmtiles coord check throws on these) → blank tile, not a 500.
     const n = 2 ** z;
-    if (x >= n || y >= n)
-      return layer === "contours" ? noTile() : transparentResponse();
+    if (x >= n || y >= n) return isVector ? noTile() : transparentResponse();
 
-    if (layer === "contours") {
+    if (isVector) {
       const t = await tile(env, "contours.pmtiles", z, x, y);
       return t ? new Response(t, { headers: MVT }) : noTile();
     }
@@ -244,7 +301,14 @@ export default {
     }
     // No overlay covers it: overzoom the planet, or transparent if even that's absent.
     if (!transparentCache) transparentCache = await _makeTransparent();
-    const planetOz = await overzoom(env, "planet.pmtiles", mf.planet.max_zoom, z, x, y);
+    const planetOz = await overzoom(
+      env,
+      "planet.pmtiles",
+      mf.planet.max_zoom,
+      z,
+      x,
+      y,
+    );
     return new Response(planetOz ?? transparentCache, { headers: WEBP });
   },
 };

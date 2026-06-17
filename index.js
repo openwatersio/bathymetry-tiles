@@ -3,21 +3,25 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 // ─── Tile sources ───────────────────────────────────────────────────────
 // The serving Worker (worker/) presents one unified XYZ endpoint per layer:
-//   {base}/bathymetry/terrain/{z}/{x}/{y}    — Terrarium terrain (planet + overlays, overzoomed)
-//   {base}/bathymetry/contours/{z}/{x}/{y}   — MVT contours
-// VITE_BBOX (initial view) and VITE_TILES_BASE (worker URL) come from import.meta.env.
+//   {base}/{z}/{x}/{y}.webp   — Terrarium terrain raster (planet + overlays, overzoomed)
+//   {base}/{z}/{x}/{y}.pbf    — MVT vector (contours, more layers later)
+// VITE_TILES_BASE is the full bathymetry endpoint base — it includes the
+// /bathymetry route prefix in prod (e.g. https://tiles.openwaters.io/bathymetry);
+// the dev default points at the worker root. VITE_BBOX sets the initial view.
 const BBOX = import.meta.env.VITE_BBOX
   ? import.meta.env.VITE_BBOX.split(",").map(Number)
   : [-180, -85, 180, 85];
-const tilesBase = import.meta.env.VITE_TILES_BASE || "http://localhost:8787";
-const terrainTiles = `${tilesBase}/bathymetry/terrain/{z}/{x}/{y}`;
-const contourTiles = `${tilesBase}/bathymetry/contours/{z}/{x}/{y}`;
+const tilesBase = (
+  import.meta.env.VITE_TILES_BASE || "http://localhost:8787"
+).replace(/\/$/, "");
+const terrainTiles = `${tilesBase}/{z}/{x}/{y}.webp`;
+const contourTiles = `${tilesBase}/{z}/{x}/{y}.pbf`;
 const MAX_ZOOM = 13; // deepest source; the Worker overzooms the base for the rest
 
 // The Worker overzooms the raster terrain server-side up to MAX_ZOOM, but vector
 // contours are a plain passthrough — so tell MapLibre their true max zoom (the
 // deepest source in the manifest) and it overzooms them client-side above that.
-const manifest = await fetch(`${tilesBase}/bathymetry/manifest.json`)
+const manifest = await fetch(`${tilesBase}/manifest.json`)
   .then((r) => r.json())
   .catch(() => null);
 const contourMax = manifest
