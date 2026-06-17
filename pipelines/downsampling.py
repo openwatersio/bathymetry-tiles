@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 from glob import glob
+from multiprocessing import Pool
 
 import imagecodecs
 import mercantile
@@ -22,10 +23,6 @@ from pmtiles.reader import Reader, MmapSource
 
 import encode
 import utils
-
-# Child pmtiles the covering referenced but that weren't present on disk (a tile no
-# aggregate shard produced, or that didn't sync). Collected so run() can report them.
-MISSING_CHILDREN = set()
 
 
 # ── cover ────────────────────────────────────────────────────────────────────
@@ -93,7 +90,10 @@ def get_tile_to_pmtiles_filename(pmtiles_filenames):
 
 
 def create_tile(parent_x, parent_y, parent_z, tmp_folder, pmtiles_filenames):
+    """Build one parent webp from its 4 children. Returns the set of child pmtiles
+    filenames the covering referenced but that weren't on disk (gaps to report)."""
     tile_to_filename = get_tile_to_pmtiles_filename(pmtiles_filenames)
+    missing = set()
     full = np.zeros((1024, 1024), dtype=np.float32)
     for row in range(2):
         for col in range(2):
@@ -108,7 +108,7 @@ def create_tile(parent_x, parent_y, parent_z, tmp_folder, pmtiles_filenames):
             # didn't sync): treat that quadrant as empty rather than abort the whole
             # pyramid, and record it so the gap is visible (not silently dropped).
             if not os.path.isfile(child_path):
-                MISSING_CHILDREN.add(filename)
+                missing.add(filename)
                 continue
             with open(child_path, "r+b") as f:
                 child_bytes = Reader(MmapSource(f)).get(child.z, child.x, child.y)
@@ -121,12 +121,15 @@ def create_tile(parent_x, parent_y, parent_z, tmp_folder, pmtiles_filenames):
     rgb = encode.encode(parent_data, encode.FULL_RESOLUTION_ZOOM, conservative=True)
     with open(f"{tmp_folder}/{parent_z}-{parent_x}-{parent_y}.webp", "wb") as f:
         f.write(imagecodecs.webp_encode(rgb, lossless=True))
+    return missing
 
 
 def run_one(filepath):
+    """Build one parent pmtiles. Returns the set of missing child filenames (empty if
+    already done). Pure per-filepath unit of work — safe to run in a process Pool."""
     aggregation_id, filename = filepath.split("/")[-2:]
     if os.path.isfile(filepath.replace("-downsampling.csv", "-downsampling.done")):
-        return
+        return set()
     z, x, y, parent_zoom = (int(a) for a in filename.replace("-downsampling.csv", "").split("-"))
     out_folder = utils.get_pmtiles_folder(x, y, z)
     utils.create_folder(out_folder)
@@ -138,12 +141,14 @@ def run_one(filepath):
     with open(filepath) as f:
         pmtiles_filenames = [a.strip() for a in f.readlines()[1:]]
 
+    missing = set()
     parents = [extent] if z == parent_zoom else list(mercantile.children(extent, zoom=parent_zoom))
     for parent in parents:
-        create_tile(parent.x, parent.y, parent.z, tmp_folder, pmtiles_filenames)
+        missing |= create_tile(parent.x, parent.y, parent.z, tmp_folder, pmtiles_filenames)
     utils.create_archive(tmp_folder, out_filepath)
     shutil.rmtree(tmp_folder)
     utils.run_command(f'touch {filepath.replace("-downsampling.csv", "-downsampling.done")}')
+    return missing
 
 
 def tiles_intersect(a, b):
@@ -180,15 +185,19 @@ def run():
         if is_dirty(mercantile.Tile(x=x, y=y, z=z), filename):
             by_child_zoom.setdefault(child_zoom, []).append(filepath)
 
-    # high child_zoom first so each level feeds the next.
-    for child_zoom in sorted(by_child_zoom, reverse=True):
-        for filepath in by_child_zoom[child_zoom]:
-            run_one(filepath)
+    # High child_zoom first so each level feeds the next. Within a level the parents
+    # are independent → fan out across cores; draining each level before the next
+    # keeps the level barrier (a parent reads children built one level down).
+    missing = set()
+    with Pool() as pool:
+        for child_zoom in sorted(by_child_zoom, reverse=True):
+            for m in pool.imap_unordered(run_one, by_child_zoom[child_zoom], chunksize=1):
+                missing |= m
 
-    if MISSING_CHILDREN:
-        sample = ", ".join(sorted(MISSING_CHILDREN)[:15])
-        print(f"WARN: {len(MISSING_CHILDREN)} referenced pmtiles missing — "
-              f"left as gaps in the pyramid: {sample}{' …' if len(MISSING_CHILDREN) > 15 else ''}")
+    if missing:
+        sample = ", ".join(sorted(missing)[:15])
+        print(f"WARN: {len(missing)} referenced pmtiles missing — "
+              f"left as gaps in the pyramid: {sample}{' …' if len(missing) > 15 else ''}")
 
 
 if __name__ == "__main__":

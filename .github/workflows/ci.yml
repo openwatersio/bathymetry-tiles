@@ -246,9 +246,10 @@ jobs:
       - name: Pull store from R2
         run: |
           mkdir -p store
+          # combine = downsampling + bundle.py (terrain only); contours are bundled by
+          # the separate sharded contour jobs, so store/contour is NOT pulled here.
           aws s3 sync "s3://$R2_BUCKET/store/aggregation" store/aggregation
           aws s3 sync "s3://$R2_BUCKET/store/pmtiles" store/pmtiles
-          aws s3 sync "s3://$R2_BUCKET/store/contour" store/contour
       - name: Downsample + bundle
         run: docker run --rm -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just combine
       - name: Push pyramid + bundles to R2

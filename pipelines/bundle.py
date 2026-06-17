@@ -17,6 +17,7 @@ import json
 import math
 import os
 from glob import glob
+from multiprocessing import Pool
 
 import mercantile
 from pmtiles.tile import zxy_to_tileid, TileType, Compression
@@ -131,13 +132,22 @@ def create_archive(filepaths, name):
             "bbox": [min_lon, min_lat, max_lon, max_lat]}
 
 
+def bundle_group(item):
+    name, filepaths = item
+    print(f"bundling {name} ({len(filepaths)} pmtiles)...")
+    return name, create_archive(filepaths, name)
+
+
 def main():
     aggregation_id = utils.get_aggregation_ids()[-1]
     groups, _ = group_filepaths(aggregation_id)
     manifest = {"planet": None, "sources": []}
-    for name, filepaths in groups.items():
-        print(f"bundling {name} ({len(filepaths)} pmtiles)...")
-        meta = create_archive(filepaths, name)
+    # Each group writes its own <name>.pmtiles independently → bundle them in parallel
+    # (one process per group, capped at core count). The planet group is the bulk, so
+    # the overlays now overlap it instead of queueing behind it.
+    with Pool(min(os.cpu_count() or 1, len(groups))) as pool:
+        results = pool.map(bundle_group, list(groups.items()))
+    for name, meta in results:
         if name == "planet":
             manifest["planet"] = meta
         else:
