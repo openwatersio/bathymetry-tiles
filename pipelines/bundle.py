@@ -24,6 +24,7 @@ from pmtiles.tile import zxy_to_tileid, TileType, Compression
 from pmtiles.reader import Reader, MmapSource, all_tiles
 from pmtiles.writer import Writer
 
+import config
 import utils
 
 # Base cap = the GEBCO-native zoom (the planet is complete + overzoomable below it).
@@ -132,6 +133,19 @@ def create_archive(filepaths, name):
             "bbox": [min_lon, min_lat, max_lon, max_lat]}
 
 
+def attribution():
+    """One HTML attribution string crediting every configured source. terrain and
+    contours both come from the all-source merged DEM, so they share it.
+    Lists all configured sources, not just those a regional BBOX actually touched —
+    filter by manifest bbox intersection if a partial build ever needs exact credit."""
+    parts = [utils.ATTRIBUTION]
+    for sid in config.sources():
+        m = config.load_metadata(sid)
+        web, name = m.get("website"), m.get("name", sid)
+        parts.append(f'<a href="{web}">{name}</a>' if web else name)
+    return " | ".join(parts)
+
+
 def bundle_group(item):
     name, filepaths = item
     print(f"bundling {name} ({len(filepaths)} pmtiles)...")
@@ -154,6 +168,7 @@ def main():
             manifest["sources"].append({"id": name, **meta})
     # deepest first so the Worker picks the highest-res overlay where they overlap.
     manifest["sources"].sort(key=lambda s: -s["max_zoom"])
+    manifest["attribution"] = attribution()
     with open("store/bundle/manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
     print(f"created {len(groups)} bundle(s): {', '.join(groups)} + manifest.json")

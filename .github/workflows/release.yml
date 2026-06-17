@@ -105,7 +105,7 @@ jobs:
         with: { node-version: 22, cache: npm }
       - name: Build viewer
         env:
-          VITE_TILES_BASE: https://tiles.openwaters.io
+          VITE_TILES_BASE: https://tiles.openwaters.io/bathymetry
         run: |
           npm ci
           npm run build
