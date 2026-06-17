@@ -90,7 +90,11 @@ def run_all(filepaths):
         print("nothing to do.")
         return
     print(f"start aggregating {len(filepaths)} items...")
-    with Pool() as pool:
+    # Each tile holds a multi-GB merged DEM (a max 32768px tile ≈ 4 GB float32, more
+    # with the halo + smooth) so peak RAM ≈ workers × DEM. Cap workers in CI via
+    # AGG_PROCESSES to stay under runner RAM; unset/0 = all cores (local builds).
+    procs = int(os.environ.get("AGG_PROCESSES", "0")) or None
+    with Pool(procs) as pool:
         pool.starmap(run, [(fp,) for fp in filepaths], chunksize=1)
 
 

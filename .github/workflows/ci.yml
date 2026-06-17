@@ -213,8 +213,12 @@ jobs:
         run: |
           # SOURCE_VSI_BASE → reproject resolves each source tile to a public /vsicurl
           # URL on R2 instead of a local store/source path. No credentials needed.
+          # AGG_PROCESSES caps concurrent tiles (each holds a multi-GB merged DEM) so
+          # a heavy shard doesn't OOM the runner; GDAL_CACHEMAX trims the block cache
+          # the /vsicurl reads accumulate (per worker).
           docker run --rm -v "$PWD/store:/app/pipelines/store" \
             -e SOURCE_VSI_BASE="/vsicurl/https://tiles.openwaters.io/store/source" \
+            -e AGG_PROCESSES=2 -e GDAL_CACHEMAX=256 \
             "$IMAGE:${{ github.sha }}" just aggregate ${{ matrix.shard.i }} ${{ matrix.shard.n }}
       - name: Push tiles + contours + done-markers to R2
         run: |
