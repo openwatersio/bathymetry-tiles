@@ -83,7 +83,11 @@ def main():
         run(tmp, "aggregation_covering.py")
         run(tmp, "aggregation_run.py")
         run(tmp, "downsampling.py", "cover")
-        run(tmp, "downsampling.py", "run")
+        # Exercise the CI fan-out (deep shards + coarse tail), not just the single
+        # run() — both shards then the tail must reproduce a correct full pyramid.
+        run(tmp, "downsampling.py", "run", "shard", "0", "2")
+        run(tmp, "downsampling.py", "run", "shard", "1", "2")
+        run(tmp, "downsampling.py", "run", "tail")
         run(tmp, "bundle.py", "1")
 
         # covering wrote the cap into child_z: the deepest aggregation tile is z9, not z11.

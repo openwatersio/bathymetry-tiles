@@ -170,6 +170,7 @@ jobs:
     permissions: { contents: read, packages: read }
     outputs:
       shards: ${{ steps.m.outputs.shards }}
+      ds_shards: ${{ steps.dm.outputs.shards }}
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/ghcr-login
@@ -185,14 +186,24 @@ jobs:
           # the tiles exist, so a failed prior build can leave gaps the diff trusts).
           aws s3 ls "s3://$DATA_BUCKET/bathymetry/pmtiles/" --recursive | awk '{print $4}' > store/pmtiles-keys.txt || true
       - name: Cover
-        run: docker run --rm -e BBOX -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just cover
+        run: |
+          # Aggregation covering, then the downsampling coverings (-downsampling.csv)
+          # so the sharded downsample job downstream sees the same plan from R2.
+          docker run --rm -e BBOX -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just cover
+          docker run --rm -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just downsample-cover
       - name: Push covering to R2
         run: aws s3 sync store/aggregation "s3://$DATA_BUCKET/bathymetry/aggregation"
       - id: m
-        name: Emit shard matrix
+        name: Emit aggregate shard matrix
         run: |
           SHARDS=$(docker run --rm -v "$PWD/store:/app/pipelines/store" \
             "$IMAGE:${{ github.sha }}" just shard-matrix "$AGG_SHARDS" | tail -n1)
+          echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
+      - id: dm
+        name: Emit downsample shard matrix
+        run: |
+          SHARDS=$(docker run --rm -v "$PWD/store:/app/pipelines/store" \
+            "$IMAGE:${{ github.sha }}" just downsample-matrix "$AGG_SHARDS" | tail -n1)
           echo "shards=$SHARDS" >> "$GITHUB_OUTPUT"
 
   # Reproject → merge → tile → contour for one strided slice of the dirty tiles.
@@ -245,12 +256,57 @@ jobs:
           aws s3 sync store/contour "s3://$DATA_BUCKET/bathymetry/contour"
           aws s3 sync store/aggregation "s3://$DATA_BUCKET/bathymetry/aggregation"
 
-  # Single-runner terrain finish: overview pyramid → planet + per-source overlays +
+  # Overview pyramid, sharded. The deep levels partition into read-closed subtrees
+  # (one per ancestor at the covering's seed zoom) so they fan out with no
+  # coordination, exactly like aggregate; the coarse global tail (a few cheap levels
+  # whose tiles span subtrees) is finished on the single bundle runner below. The
+  # level barrier stays inside each runner. A clean rebuild still spins one no-op shard.
+  downsample:
+    needs: [image, aggregate, plan]
+    if: ${{ !cancelled() && needs.aggregate.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: read }
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.ds_shards) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/ghcr-login
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
+      - name: Pull covering + tiles from R2
+        run: |
+          mkdir -p store/aggregation store/pmtiles
+          # Coverings (incl. -downsampling.csv from plan) + the aggregate leaf tiles
+          # each shard reads. ponytail: whole pmtiles store, not just this shard's
+          # ancestors — switch to per-ancestor includes if the pull dominates.
+          aws s3 sync "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
+          aws s3 sync "s3://$DATA_BUCKET/bathymetry/pmtiles" store/pmtiles
+      - name: Downsample shard ${{ matrix.shard.i }}/${{ matrix.shard.n }}
+        run: |
+          docker run --rm -v "$PWD/store:/app/pipelines/store" \
+            "$IMAGE:${{ github.sha }}" just downsample-shard ${{ matrix.shard.i }} ${{ matrix.shard.n }}
+      - name: Push pyramid + done-markers to R2
+        run: |
+          # Disjoint tile keys + this shard's -downsampling.done markers (no --delete,
+          # so shards/tail never clobber each other's markers or the coverings).
+          aws s3 sync store/pmtiles "s3://$DATA_BUCKET/bathymetry/pmtiles"
+          aws s3 sync store/aggregation "s3://$DATA_BUCKET/bathymetry/aggregation"
+
+  # Single-runner terrain finish: coarse pyramid tail → planet + per-source overlays +
   # manifest. Contours are built separately (sharded, below). Runs even on a clean
   # rebuild.
   bundle:
-    needs: aggregate
-    if: ${{ !cancelled() && needs.aggregate.result == 'success' }}
+    needs: downsample
+    if: ${{ !cancelled() && needs.downsample.result == 'success' }}
     runs-on: ubuntu-latest
     permissions: { contents: read, packages: read }
     steps:
@@ -268,15 +324,16 @@ jobs:
       - name: Pull store from R2
         run: |
           mkdir -p store
-          # combine = downsampling + bundle.py (terrain only); contours are bundled by
-          # the separate sharded contour jobs, so store/contour is NOT pulled here.
+          # tail = the coarse pyramid levels (deep levels already built by the
+          # sharded downsample job) + bundle.py (terrain only); contours are bundled
+          # by the separate sharded contour jobs, so store/contour is NOT pulled here.
           aws s3 sync "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
           aws s3 sync "s3://$DATA_BUCKET/bathymetry/pmtiles" store/pmtiles
-      - name: Downsample + bundle
-        run: docker run --rm -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just combine
+      - name: Downsample tail + bundle
+        run: docker run --rm -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just downsample-tail-bundle
       - name: Push pyramid + bundles to R2
         run: |
-          # Overview tiles + downsampling done-markers feed the next incremental run.
+          # Tail overview tiles + downsampling done-markers feed the next incremental run.
           aws s3 sync store/pmtiles "s3://$DATA_BUCKET/bathymetry/pmtiles"
           aws s3 sync store/aggregation "s3://$DATA_BUCKET/bathymetry/aggregation"
           # Final artifacts keyed by commit; release promotes them in place.

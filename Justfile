@@ -43,6 +43,21 @@ combine:
     uv run python downsampling.py run
     uv run python bundle.py
 
+# CI downsampling fan-out (deep levels shard by ancestor, coarse tail on the bundler):
+#   plan job   -> just downsample-cover   (writes -downsampling.csv beside the covering)
+#   plan job   -> just downsample-matrix N (the shard matrix, sized to the dirt)
+#   matrix job -> just downsample-shard i n
+#   bundle job -> just downsample-tail-bundle
+downsample-cover:
+    uv run python downsampling.py cover
+downsample-matrix max:
+    @uv run python downsampling.py matrix {{max}}
+downsample-shard i n:
+    uv run python downsampling.py run shard {{i}} {{n}}
+downsample-tail-bundle:
+    uv run python downsampling.py run tail
+    uv run python bundle.py
+
 # Contours, whole set (local/regional). CI shards these across runners — see below.
 contours:
     uv run python contour_run.py bundle

@@ -7,12 +7,20 @@ keep full Terrarium precision (no per-zoom quantization) but route through
 encode.py so the conservative (never-deepen) rounding still applies. WebP is
 decoded with imagecodecs (no PIL dependency).
 
-Usage (from pipelines/):  downsampling.py cover   |   downsampling.py run
+``run`` builds the whole dirty pyramid on one machine; ``run shard i n`` /
+``run tail`` split it across CI runners (see ``run`` for the cut).
+
+Usage (from pipelines/):
+  downsampling.py cover
+  downsampling.py run [shard <i> <n> | tail]
+  downsampling.py matrix <max>            # CI shard matrix JSON, sized to the dirt
 """
 
+import json
 import os
 import shutil
 import sys
+import time
 from glob import glob
 from multiprocessing import Pool
 
@@ -161,7 +169,29 @@ def tiles_intersect(a, b):
     return False
 
 
-def run():
+# Below this zoom an overview archive's parent spans 4 different ancestors, so the
+# work can't be partitioned spatially — every aggregation work tile sits at or above
+# it (it's the covering's seed zoom). At or above it, extent zoom only ever climbs as
+# tiles coarsen along a lineage, so a finer child shares its parent's ancestor: a
+# shard owning an ancestor reads only tiles already inside it. So: z >= here → shard
+# by ancestor; below → the single-runner tail (a few cheap global levels).
+SHARD_ROOT_Z = max(utils.macrotile_z - utils.num_overviews, 0)
+
+
+def shard_ancestor(filepath):
+    """The SHARD_ROOT_Z-ancestor id a deep downsampling csv belongs to, or None if
+    it's a tail csv (extent below the root zoom, so its output spans ancestors)."""
+    z, x, y, _ = (int(a) for a in filepath.split("/")[-1].replace("-downsampling.csv", "").split("-"))
+    if z < SHARD_ROOT_Z:
+        return None
+    tile = mercantile.Tile(x=x, y=y, z=z)
+    a = tile if z == SHARD_ROOT_Z else mercantile.parent(tile, zoom=SHARD_ROOT_Z)
+    return f"{a.z}-{a.x}-{a.y}"
+
+
+def dirty_filepaths():
+    """Sorted -downsampling.csv to (re)build — the aggregate stage's dirty-diff
+    lifted to the downsampling coverings (changed tiles, or whose pmtiles is gone)."""
     aggregation_ids = utils.get_aggregation_ids()
     aggregation_id = aggregation_ids[-1]
 
@@ -178,21 +208,38 @@ def run():
             return True
         return len(glob(f"store/aggregation/{aggregation_ids[-2]}/{filename}")) == 0
 
-    by_child_zoom = {}
+    out = []
     for filepath in sorted(glob(f"store/aggregation/{aggregation_id}/*-downsampling.csv")):
         filename = filepath.split("/")[-1]
-        z, x, y, child_zoom = (int(a) for a in filename.replace("-downsampling.csv", "").split("-"))
+        z, x, y, _ = (int(a) for a in filename.replace("-downsampling.csv", "").split("-"))
         if is_dirty(mercantile.Tile(x=x, y=y, z=z), filename):
-            by_child_zoom.setdefault(child_zoom, []).append(filepath)
+            out.append(filepath)
+    return out
+
+
+def execute(filepaths):
+    by_child_zoom = {}
+    for filepath in filepaths:
+        child_zoom = int(filepath.split("/")[-1].replace("-downsampling.csv", "").split("-")[3])
+        by_child_zoom.setdefault(child_zoom, []).append(filepath)
 
     # High child_zoom first so each level feeds the next. Within a level the parents
     # are independent → fan out across cores; draining each level before the next
     # keeps the level barrier (a parent reads children built one level down).
+    total = sum(len(v) for v in by_child_zoom.values())
+    done = 0
+    last = time.monotonic()
     missing = set()
     with Pool() as pool:
         for child_zoom in sorted(by_child_zoom, reverse=True):
-            for m in pool.imap_unordered(run_one, by_child_zoom[child_zoom], chunksize=1):
+            level = by_child_zoom[child_zoom]
+            print(f"child_zoom={child_zoom}: {len(level)} parent(s)", flush=True)
+            for m in pool.imap_unordered(run_one, level, chunksize=1):
                 missing |= m
+                done += 1
+                if time.monotonic() - last > 30:
+                    print(f"  {done}/{total} parents built", flush=True)
+                    last = time.monotonic()
 
     if missing:
         sample = ", ".join(sorted(missing)[:15])
@@ -200,10 +247,46 @@ def run():
               f"left as gaps in the pyramid: {sample}{' …' if len(missing) > 15 else ''}")
 
 
+def run(shard=None, tail=False):
+    """Build the dirty overview pyramid. Default = everything on one machine.
+
+    Across CI runners (the cut keeps the level barrier inside one machine):
+      ``shard=(i, n)`` — only the deep levels under the i-th strided slice of
+        SHARD_ROOT_Z ancestors; each shard's subtree is read-closed, so they run
+        concurrently with no coordination and push disjoint tiles.
+      ``tail=True``    — only the coarse levels whose archives span ancestors
+        (extent < SHARD_ROOT_Z); a few cheap global levels, run on one runner once
+        every shard has landed (a tail parent reads tiles the shards built)."""
+    filepaths = dirty_filepaths()
+    if tail:
+        filepaths = [fp for fp in filepaths if shard_ancestor(fp) is None]
+    elif shard is not None:
+        i, n = shard
+        ancestors = sorted({a for fp in filepaths if (a := shard_ancestor(fp)) is not None})
+        owned = set(ancestors[i::n])
+        filepaths = [fp for fp in filepaths if shard_ancestor(fp) in owned]
+    execute(filepaths)
+
+
+def matrix(maxn):
+    """Print the CI deep-shard matrix JSON: <= maxn shards, >= 1, sized to the
+    number of distinct ancestors in the dirty deep set."""
+    ancestors = {a for fp in dirty_filepaths() if (a := shard_ancestor(fp)) is not None}
+    n = min(maxn, max(len(ancestors), 1))
+    print(json.dumps([{"i": i, "n": n} for i in range(n)]))
+
+
 if __name__ == "__main__":
-    if len(sys.argv) == 2 and sys.argv[1] == "cover":
+    argv = sys.argv[1:]
+    if argv == ["cover"]:
         cover()
-    elif len(sys.argv) == 2 and sys.argv[1] == "run":
+    elif argv == ["run"]:
         run()
+    elif argv[:2] == ["run", "tail"]:
+        run(tail=True)
+    elif argv[:2] == ["run", "shard"] and len(argv) == 4:
+        run(shard=(int(argv[2]), int(argv[3])))
+    elif argv[:1] == ["matrix"] and len(argv) == 2:
+        matrix(int(argv[1]))
     else:
-        sys.exit("usage: downsampling.py <cover|run>")
+        sys.exit("usage: downsampling.py <cover | run [shard <i> <n> | tail] | matrix <max>>")
