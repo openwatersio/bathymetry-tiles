@@ -111,7 +111,7 @@ jobs:
           VITE_TILES_BASE: https://tiles.openwaters.io/bathymetry
         run: |
           npm ci
-          npm run build
+          npm run build -- --base=/${{ github.event.repository.name }}/
       - uses: actions/upload-pages-artifact@v4
         with: { path: dist }
       - id: deployment
