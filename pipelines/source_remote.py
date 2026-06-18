@@ -53,26 +53,68 @@ def write_bounds(source, rows):
     print(f"{source}: wrote {len(rows)} tiles to bounds.csv")
 
 
+def _prev_bounds(source):
+    """Previous bounds.csv as {vsicurl_path: row}, for incremental re-register. Empty if absent."""
+    path = f"store/source/{source}/bounds.csv"
+    if not os.path.isfile(path):
+        return {}
+    rows = {}
+    with open(path) as f:
+        next(f, None)  # header
+        for line in f:
+            parts = line.rstrip("\n").split(",")
+            if len(parts) == 7:
+                rows[parts[0]] = tuple(parts)  # keyed on the /vsicurl filename
+    return rows
+
+
 def register_tiles(source, urls):
     """Header-read each tile via /vsicurl -> 3857 bounds + pixel size -> bounds.csv. For sources
     with no metadata index (a flat urllist, e.g. CUDEM); a GeoPackage-indexed source builds rows
-    from the index and calls write_bounds directly, skipping these per-tile reads."""
-    rows = []
-    for i, url in enumerate(urls):
+    from the index and calls write_bounds directly, skipping these per-tile reads.
+
+    Incremental: a tile URL already in the previous bounds.csv is reused as-is, so a re-register
+    only opens headers for *newly-added* URLs (a urllist's tile URLs are stable — CUDEM names
+    encode lat/lon + version — so a rebuild reads ~0 headers). Delete bounds.csv to force a full
+    refetch."""
+    prev = _prev_bounds(source)
+    rows, reads = [], 0
+    for url in urls:
         path = to_vsicurl(url)
+        if path in prev:
+            rows.append(prev[path])
+            continue
         with rasterio.open(path) as src:
             if src.crs is None:
                 sys.exit(f"crs not defined on {path}")
             left, bottom, right, top = bounds_3857(src)
             rows.append((path, left, bottom, right, top, src.width, src.height))
-        if (i + 1) % 100 == 0:
-            print(f"  read {i + 1}/{len(urls)} headers")
+        reads += 1
+        if reads % 100 == 0:
+            print(f"  read {reads} new headers")
     write_bounds(source, rows)
+    print(f"{source}: {len(rows)} tiles ({reads} newly read, {len(rows) - reads} reused)")
 
 
 def _check():
+    import shutil
     assert to_vsicurl("s3://b/k/x.tif") == "/vsicurl/https://b.s3.amazonaws.com/k/x.tif"
     assert to_vsicurl("https://h.example/x.tif") == "/vsicurl/https://h.example/x.tif"
+
+    # incremental: a tile already in bounds.csv is reused, never re-fetched. If reuse broke,
+    # register_tiles would try to open the (unreachable) header and fail — so this also asserts
+    # offline behavior.
+    src = "_remote_selfcheck"
+    os.makedirs(f"store/source/{src}", exist_ok=True)
+    url = "https://h.example/dem/t.tif"
+    row = f"{to_vsicurl(url)},1.0,2.0,3.0,4.0,10,20"
+    with open(f"store/source/{src}/bounds.csv", "w") as f:
+        f.write("filename,left,bottom,right,top,width,height\n" + row + "\n")
+    register_tiles(src, [url])  # cached -> no header read
+    with open(f"store/source/{src}/bounds.csv") as f:
+        out = f.read().splitlines()
+    assert out[1] == row, out
+    shutil.rmtree(f"store/source/{src}")
     print("source_remote.py self-check ok")
 
 

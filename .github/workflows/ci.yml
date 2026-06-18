@@ -136,6 +136,16 @@ jobs:
           haskell: true
           large-packages: true
           swap-storage: true
+      # Seed the previous bounds.csv so a re-registered streaming source reuses cached
+      # tile headers and only reads newly-added URLs (CUDEM's 942 header reads → ~0 on a
+      # rebuild). Harmless for the rest: a GeoPackage source rebuilds bounds from its index,
+      # a prepared source overwrites it.
+      - name: Seed previous bounds
+        if: steps.check.outputs.current != 'true'
+        run: |
+          mkdir -p "store/source/${{ matrix.source }}"
+          aws s3 cp "s3://$R2_BUCKET/store/source/${{ matrix.source }}/bounds.csv" \
+            "store/source/${{ matrix.source }}/bounds.csv" 2>/dev/null || true
       - name: Prepare ${{ matrix.source }}
         if: steps.check.outputs.current != 'true'
         run: |
