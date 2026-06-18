@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import mercantile
 import numpy as np
@@ -63,9 +64,25 @@ def per_tile_vrts(tmp_folder, i, source_items):
     for j, item in enumerate(source_items):
         path = config.source_path(source, item["filename"])
         vrt = f"{tmp_folder}/{i}-{j}.vrt"
-        utils.run_command(f"gdalbuildvrt -overwrite {bsel}{vrt} {path}", silent=SILENT)
+        _build_tile_vrt(f"gdalbuildvrt -overwrite {bsel}{vrt} {path}")
         vrts.append(vrt)
     return vrts
+
+
+def _build_tile_vrt(cmd, tries=3):
+    """Run a per-tile gdalbuildvrt, retrying on a transient /vsicurl read. Each tile is a
+    separate range read over public HTTPS; a momentary blip (connection reset, "HTTP
+    response code 0") makes gdalbuildvrt exit 1 with no VRT, and GDAL's own HTTP retry
+    doesn't reliably catch transport-level errors. Re-running is a fresh attempt; raise
+    after `tries` so a tile that's genuinely gone (a real 404) still fails loudly."""
+    for attempt in range(1, tries + 1):
+        try:
+            utils.run_command(cmd, silent=SILENT)
+            return
+        except RuntimeError:
+            if attempt == tries:
+                raise
+            time.sleep(2 ** attempt)  # 2s, 4s
 
 
 def warp_mixed(inputs, out_tif, zoom, aggregation_tile, buffer):
@@ -211,6 +228,31 @@ def _check():
         assert False, "expected run_command to raise on a failed gdalbuildvrt"
     except RuntimeError:
         assert not os.path.exists(miss)
+
+    # _build_tile_vrt retries a transient failure then succeeds, and raises once exhausted.
+    # (mock run_command + sleep so it's offline and instant)
+    real_run, real_sleep, calls = utils.run_command, time.sleep, []
+    try:
+        time.sleep = lambda s: None
+        def fail_once(cmd, silent=True):
+            calls.append(cmd)
+            if len(calls) < 2:
+                raise RuntimeError("transient")
+            return "", ""
+        utils.run_command = fail_once
+        _build_tile_vrt("noop", tries=3)
+        assert len(calls) == 2, calls  # failed once, recovered on retry
+
+        def always_fail(cmd, silent=True):
+            raise RuntimeError("persistent")
+        utils.run_command = always_fail
+        try:
+            _build_tile_vrt("noop", tries=2)
+            assert False, "expected _build_tile_vrt to raise after exhausting retries"
+        except RuntimeError:
+            pass
+    finally:
+        utils.run_command, time.sleep = real_run, real_sleep
     print(f"aggregation_reproject.py self-check ok (valid pixels: A={va}, A+B={vboth})")
 
 
