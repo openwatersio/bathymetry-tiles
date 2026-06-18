@@ -172,7 +172,7 @@ jobs:
           # Covering only needs each source's bounds.csv (not the full DEM)…
           aws s3 sync "s3://$DATA_BUCKET/bathymetry/source" store/source --exclude '*' --include '*/bounds.csv'
           # …plus the prior covering(s) so the dirty-diff has something to compare to.
-          aws s3 sync "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
+          aws s3 sync --no-progress "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
           # …and the list of already-built pmtiles, so the diff rebuilds any covering
           # tile whose artifact is missing (self-heal — coverings are pushed before
           # the tiles exist, so a failed prior build can leave gaps the diff trusts).
@@ -185,6 +185,21 @@ jobs:
           docker run --rm -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just downsample-cover
       - name: Push covering to R2
         run: aws s3 sync store/aggregation "s3://$DATA_BUCKET/bathymetry/aggregation"
+      - name: Prune old coverings (keep newest 3)
+        run: |
+          # store/aggregation accrues one covering dir (ULID) per build, but every
+          # consumer reads only the newest two (current + previous, for the dirty-diff).
+          # Without this, each of ~50 downstream jobs re-syncs the entire backlog —
+          # 15 coverings ≈ 28k tiny files, a latency-bound ~3 min sync apiece. Drop all
+          # but the newest 3 (one extra for margin); ULIDs sort chronologically.
+          ids=$(aws s3 ls "s3://$DATA_BUCKET/bathymetry/aggregation/" | awk '{print $2}' | tr -d /)
+          keep=$(echo "$ids" | sort | tail -3)
+          for id in $ids; do
+            grep -qx "$id" <<<"$keep" || {
+              echo "pruning covering $id"
+              aws s3 rm "s3://$DATA_BUCKET/bathymetry/aggregation/$id" --recursive
+            }
+          done
       - id: m
         name: Emit aggregate shard matrix
         run: |
@@ -217,7 +232,7 @@ jobs:
           mkdir -p store/aggregation store/pmtiles store/contour
           # Source COGs are NOT pulled — reproject range-reads them via /vsicurl from
           # public R2 (and CUDEM from public NOAA). Only the covering + pmtiles keys.
-          aws s3 sync "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
+          aws s3 sync --no-progress "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
           # Same pmtiles listing the plan used, so shards re-derive the identical
           # dirty set (changed tiles + any whose pmtiles is missing).
           aws s3 ls "s3://$DATA_BUCKET/bathymetry/pmtiles/" --recursive | awk '{print $4}' > store/pmtiles-keys.txt || true
@@ -260,7 +275,7 @@ jobs:
           mkdir -p store/aggregation store/pmtiles
           # Coverings (incl. -downsampling.csv from plan) — small, needed to derive the
           # dirty set + which ancestors this shard owns.
-          aws s3 sync "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
+          aws s3 sync --no-progress "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
           # Only this shard's slice of store/pmtiles (its ancestors' tiles), NOT the
           # whole tens-of-GB store: list the keys, let Python filter to the shard, then
           # parallel-copy preserving the z7-sharded layout.
@@ -301,7 +316,7 @@ jobs:
           # tail = the coarse pyramid levels (deep levels already built by the
           # sharded downsample job) + bundle.py (terrain only); contours are bundled
           # by the separate sharded contour jobs, so store/contour is NOT pulled here.
-          aws s3 sync "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
+          aws s3 sync --no-progress "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
           aws s3 sync "s3://$DATA_BUCKET/bathymetry/pmtiles" store/pmtiles
       - name: Downsample tail + bundle
         run: docker run --rm -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just downsample-tail-bundle
