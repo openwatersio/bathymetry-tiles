@@ -294,12 +294,9 @@ jobs:
       - name: Pull store from R2
         run: |
           # bundle.py concatenates EVERY tile into planet + per-source overlays, so the
-          # whole pmtiles store (tens of GB) must be on disk — it won't fit the ~20 GB
-          # root FS. Stage it on the runner's large ephemeral disk (/mnt, ~70 GB) via a
-          # store -> /mnt/store symlink so the paths below + the container mount are
-          # unchanged. (Per-source overlay sharding is the real scaling fix; bundle.py E3.)
-          sudo mkdir -p /mnt/store && sudo chown "$(id -u):$(id -g)" /mnt/store
-          ln -sfn /mnt/store store
+          # whole pmtiles store (tens of GB) lands here. It runs alone (after every
+          # downsample shard), so no concurrent writer races the pull, and the runner
+          # has the headroom — no free-disk-space / staging needed.
           mkdir -p store/aggregation store/pmtiles
           # tail = the coarse pyramid levels (deep levels already built by the
           # sharded downsample job) + bundle.py (terrain only); contours are bundled
@@ -307,7 +304,7 @@ jobs:
           aws s3 sync "s3://$DATA_BUCKET/bathymetry/aggregation" store/aggregation
           aws s3 sync "s3://$DATA_BUCKET/bathymetry/pmtiles" store/pmtiles
       - name: Downsample tail + bundle
-        run: docker run --rm -v "/mnt/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just downsample-tail-bundle
+        run: docker run --rm -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just downsample-tail-bundle
       - name: Push pyramid + bundles to R2
         run: |
           # Tail overview tiles + downsampling done-markers feed the next incremental run.
