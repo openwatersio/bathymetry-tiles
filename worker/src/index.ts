@@ -293,11 +293,18 @@ export default {
     const tb = tileBounds(z, x, y);
     for (const s of mf.sources) {
       if (!intersects(tb, s.bbox)) continue;
-      const t =
-        z <= s.max_zoom
-          ? await tile(env, s.file, z, x, y)
-          : await overzoom(env, s.file, s.max_zoom, z, x, y);
-      if (t) return new Response(t, { headers: WEBP });
+      // A miss (covering claims this bbox but lacks the tile) OR an error (R2 miss, bad
+      // range, decode failure) must not dead-end the tile — fall through to the next
+      // covering source, then the planet overzoom below.
+      try {
+        const t =
+          z <= s.max_zoom
+            ? await tile(env, s.file, z, x, y)
+            : await overzoom(env, s.file, s.max_zoom, z, x, y);
+        if (t) return new Response(t, { headers: WEBP });
+      } catch (e) {
+        console.log(`overlay ${s.file} failed at ${z}/${x}/${y}, trying next: ${e}`);
+      }
     }
     // No overlay covers it: overzoom the planet, or transparent if even that's absent.
     if (!transparentCache) transparentCache = await _makeTransparent();

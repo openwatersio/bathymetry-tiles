@@ -173,6 +173,19 @@ def get_pmtiles_folder(x, y, z):
     return f'store/pmtiles/{parent.z}-{parent.x}-{parent.y}'
 
 
+def existing_pmtiles():
+    """Basenames of pmtiles already in the store. From a CI-provided listing
+    (store/pmtiles-keys.txt = the R2 keys) when present, else a local scan. Shared by the
+    aggregate and downsample dirty-diffs so both agree on what's actually built — a
+    covering whose pmtiles isn't here is rebuilt, which is how a dropped/unsynced shard's
+    hole self-heals instead of staying 'clean' forever."""
+    keyfile = "store/pmtiles-keys.txt"
+    if os.path.isfile(keyfile):
+        with open(keyfile) as f:
+            return {line.strip().split("/")[-1] for line in f if line.strip()}
+    return {p.split("/")[-1] for p in glob("store/pmtiles/**/*.pmtiles", recursive=True)}
+
+
 def get_grouped_source_items(filepath):
     '''group source items by maxzoom and source, most-important first'''
     with open(filepath) as f:

@@ -152,8 +152,31 @@ def bundle_group(item):
     return name, create_archive(filepaths, name)
 
 
+def verify_complete(aggregation_id):
+    """Every covering must have produced a pmtiles, or the pyramid has a silent hole.
+    create_tile (aggregate) and run_one (downsample) emit one pmtiles per covering, so a
+    covering with no pmtiles means a shard never ran or didn't sync — the Worker overzooms
+    GEBCO into that hole, so it renders as missing high-zoom terrain. Fail rather than
+    publish it. (downsampling.execute catches gaps a *running* shard sees; this catches a
+    shard that produced nothing at all, which leaves nothing for execute to notice.)"""
+    coverings = {
+        c.split("/")[-1].replace("-aggregation.csv", "").replace("-downsampling.csv", "")
+        for c in glob(f"store/aggregation/{aggregation_id}/*-aggregation.csv")
+        + glob(f"store/aggregation/{aggregation_id}/*-downsampling.csv")
+    }
+    have = {fp.split("/")[-1].replace(".pmtiles", "")
+            for fp in glob("store/pmtiles/*.pmtiles") + glob("store/pmtiles/*/*.pmtiles")}
+    missing = sorted(coverings - have)
+    if missing:
+        raise SystemExit(
+            f"pyramid incomplete: {len(missing)} of {len(coverings)} coverings have no pmtiles "
+            f"(a failed/unsynced aggregate or downsample shard) — e.g. "
+            f"{', '.join(missing[:15])}{' …' if len(missing) > 15 else ''}")
+
+
 def main():
     aggregation_id = utils.get_aggregation_ids()[-1]
+    verify_complete(aggregation_id)
     groups, _ = group_filepaths(aggregation_id)
     manifest = {"planet": None, "sources": []}
     # Each group writes its own <name>.pmtiles independently → bundle them in parallel

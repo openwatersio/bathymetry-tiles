@@ -134,6 +134,18 @@ def main():
         assert min(all_meds) < -90, f"base (-100) should appear (min median {min(all_meds):.1f})"
         print(f"engine e2e ok — zooms {min(by_zoom)}..{max_z}, fine wins at z11 "
               f"({z11_shallowest:.1f}), base present (min {min(all_meds):.1f})")
+
+        # FAIL-CLOSED: a covering whose pmtiles is gone (a dropped/unsynced shard) must
+        # fail the bundle, not silently publish a hole the Worker fills with overzoomed
+        # GEBCO. Delete one tile and assert bundle.py now exits non-zero.
+        victim = sorted(_glob.glob(f"{tmp}/store/pmtiles/**/*.pmtiles", recursive=True))[0]
+        os.remove(victim)
+        try:
+            run(tmp, "bundle.py")
+        except subprocess.CalledProcessError:
+            print(f"completeness gate ok — bundle failed on missing {os.path.basename(victim)}")
+        else:
+            raise AssertionError("bundle.py must fail when a covering has no pmtiles")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

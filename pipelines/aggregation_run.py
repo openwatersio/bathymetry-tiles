@@ -48,16 +48,6 @@ def run(filepath):
     print(f"{item} end")
 
 
-def existing_pmtiles():
-    """Basenames of pmtiles already in the store. From a CI-provided listing
-    (store/pmtiles-keys.txt = the R2 keys) when present, else a local scan."""
-    keyfile = "store/pmtiles-keys.txt"
-    if os.path.isfile(keyfile):
-        with open(keyfile) as f:
-            return {line.strip().split("/")[-1] for line in f if line.strip()}
-    return {p.split("/")[-1] for p in glob("store/pmtiles/**/*.pmtiles", recursive=True)}
-
-
 def dirty_filepaths():
     """Sorted aggregation CSVs to (re)build: tiles whose covering changed since the
     previous run (all on the first run) PLUS any whose pmtiles is missing; minus any
@@ -73,7 +63,7 @@ def dirty_filepaths():
         names = utils.get_dirty_aggregation_filenames(aggregation_id, aggregation_ids[-2])
         changed = {f"store/aggregation/{aggregation_id}/{name}" for name in names}
 
-    have = existing_pmtiles()
+    have = utils.existing_pmtiles()
 
     def needs_build(csv):
         if csv in changed:

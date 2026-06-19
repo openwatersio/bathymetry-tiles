@@ -112,9 +112,11 @@ def create_tile(parent_x, parent_y, parent_z, tmp_folder, pmtiles_filenames):
             fz, fx, fy, _ = (int(a) for a in filename.replace(".pmtiles", "").split("-"))
             folder = utils.get_pmtiles_folder(fx, fy, fz)
             child_path = f"{folder}/{filename}"
-            # A tile the covering referenced but no aggregate shard produced (or that
-            # didn't sync): treat that quadrant as empty rather than abort the whole
-            # pyramid, and record it so the gap is visible (not silently dropped).
+            # A tile the covering referenced but no aggregate/downsample shard produced
+            # (or that didn't sync): record it and leave this quadrant empty for now —
+            # execute() raises once the level finishes, failing the build rather than
+            # publishing a holed pyramid (the Worker overzooms GEBCO into such holes, so
+            # they surface as missing high-zoom terrain).
             if not os.path.isfile(child_path):
                 missing.add(filename)
                 continue
@@ -155,7 +157,10 @@ def run_one(filepath):
         missing |= create_tile(parent.x, parent.y, parent.z, tmp_folder, pmtiles_filenames)
     utils.create_archive(tmp_folder, out_filepath)
     shutil.rmtree(tmp_folder)
-    utils.run_command(f'touch {filepath.replace("-downsampling.csv", "-downsampling.done")}')
+    # Don't mark done when a referenced child was missing — leave it dirty so a rerun
+    # (after the upstream gap is fixed) rebuilds it instead of skipping it forever.
+    if not missing:
+        utils.run_command(f'touch {filepath.replace("-downsampling.csv", "-downsampling.done")}')
     return missing
 
 
@@ -227,8 +232,12 @@ def shard_keys(i, n):
 
 
 def dirty_filepaths():
-    """Sorted -downsampling.csv to (re)build — the aggregate stage's dirty-diff
-    lifted to the downsampling coverings (changed tiles, or whose pmtiles is gone)."""
+    """Sorted -downsampling.csv to (re)build — the aggregate stage's dirty-diff lifted to
+    the downsampling coverings: changed tiles, OR whose pmtiles is gone. The missing-pmtiles
+    case is load-bearing (same as aggregation_run): a covering whose pmtiles a prior run
+    failed to produce/sync would otherwise diff clean forever, so the hole would never
+    refill. With it, the next run re-marks that tile dirty and the level cascade rebuilds it
+    (its children one level down are dirty too, or already present)."""
     aggregation_ids = utils.get_aggregation_ids()
     aggregation_id = aggregation_ids[-1]
 
@@ -238,7 +247,11 @@ def dirty_filepaths():
             z, x, y, _ = (int(a) for a in name.replace("-aggregation.csv", "").split("-"))
             dirty_tiles.append(mercantile.Tile(x=x, y=y, z=z))
 
+    have = utils.existing_pmtiles()
+
     def is_dirty(tile, filename):
+        if filename.replace("-downsampling.csv", ".pmtiles") not in have:
+            return True
         if len(aggregation_ids) < 2:
             return True
         if any(tiles_intersect(d, tile) for d in dirty_tiles):
@@ -277,11 +290,15 @@ def execute(filepaths):
                 if time.monotonic() - last > 30:
                     print(f"  {done}/{total} parents built", flush=True)
                     last = time.monotonic()
-
-    if missing:
-        sample = ", ".join(sorted(missing)[:15])
-        print(f"WARN: {len(missing)} referenced pmtiles missing — "
-              f"left as gaps in the pyramid: {sample}{' …' if len(missing) > 15 else ''}")
+            # Fail at the level barrier (before the gap cascades into blank parents one
+            # level down): a referenced child missing here means a failed/unsynced
+            # aggregate or downsample shard, not a publishable pyramid.
+            if missing:
+                sample = ", ".join(sorted(missing)[:15])
+                raise SystemExit(
+                    f"pyramid incomplete at child_zoom={child_zoom}: {len(missing)} referenced "
+                    f"child pmtiles missing (a failed/unsynced shard). Fix the gap and rerun — "
+                    f"the affected parents stay dirty: {sample}{' …' if len(missing) > 15 else ''}")
 
 
 def run(shard=None, tail=False):
