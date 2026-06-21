@@ -306,12 +306,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/ghcr-login
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
       - name: Pull store from R2
         run: |
           # bundle.py concatenates EVERY tile into planet + per-source overlays, so the
           # whole pmtiles store (tens of GB) lands here. It runs alone (after every
-          # downsample shard), so no concurrent writer races the pull, and the runner
-          # has the headroom — no free-disk-space / staging needed.
+          # downsample shard), so no concurrent writer races the pull. Disk headroom comes
+          # from the Free disk space step above.
           mkdir -p store/aggregation store/pmtiles
           # tail = the coarse pyramid levels (deep levels already built by the
           # sharded downsample job) + bundle.py (terrain only); contours are bundled
