@@ -344,40 +344,17 @@ jobs:
       - name: Coarse tail + group matrix
         id: g
         run: |
-          # DIAGNOSTIC: the tail dies at process teardown with no Python traceback, so
-          # capture the real exit code (128+signal ⇒ OOM/segv), faulthandler (C-level
-          # crash), and dmesg. Remove once the cause is fixed.
-          set +e
-          docker run --rm -e FORCE_REBUILD -e PYTHONFAULTHANDLER=1 -e PYTHONUNBUFFERED=1 \
-            -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just downsample-tail
-          rc=$?
-          echo "::warning::downsample-tail exit code = $rc"
-          if [ "$rc" != 0 ]; then
-            echo "=== free -h ==="; free -h || true
-            echo "=== df -h / ==="; df -h / || true
-            echo "=== dmesg (last 60 — OOM-killer / segfault?) ==="; sudo dmesg 2>/dev/null | tail -60 || true
-            exit "$rc"
-          fi
-          # bundle-groups verifies the pyramid is whole then prints the group matrix.
-          # DIAGNOSTIC: tail succeeds (rc=0) but the step still fails here — capture
-          # bundle-groups' real exit code + full output (faulthandler/stderr merged).
-          docker run --rm -e FORCE_REBUILD -e PYTHONFAULTHANDLER=1 -e PYTHONUNBUFFERED=1 \
-            -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just bundle-groups > /tmp/groups.txt 2>&1
-          rc=$?
-          echo "::warning::bundle-groups exit code = $rc"
-          echo "=== bundle-groups output ==="; cat /tmp/groups.txt
-          if [ "$rc" != 0 ]; then
-            echo "=== dmesg (last 40) ==="; sudo dmesg 2>/dev/null | tail -40 || true
-            exit "$rc"
-          fi
-          # DIAGNOSTIC: both docker runs exit 0 yet the step dies here silently — trace
-          # the exact failing command (set -x) + disk state. GITHUB_OUTPUT=[$GITHUB_OUTPUT]
-          echo "=== df -h ==="; df -h || true
-          echo "GITHUB_OUTPUT=[$GITHUB_OUTPUT]"
-          set -ex
-          GROUPS=$(tail -n1 /tmp/groups.txt)
-          printf 'groups=%s\n' "$GROUPS" >> "$GITHUB_OUTPUT"
-          echo "bundle groups: $GROUPS"
+          set +e   # DIAGNOSTIC: capture the rc of EVERY op + the raw file bytes to pinpoint
+                   # which operation returns non-zero on the runner (all reproduce clean locally).
+          docker run --rm -e FORCE_REBUILD -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just downsample-tail; echo "::warning::tail-build-rc=$?"
+          docker run --rm -e FORCE_REBUILD -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just bundle-groups > /tmp/groups.txt 2>&1; echo "::warning::bundle-groups-rc=$?"
+          ls -la /tmp/groups.txt; wc -c /tmp/groups.txt
+          echo "--- od -c (last 120 bytes of the file) ---"; tail -c 120 /tmp/groups.txt | od -c
+          cat /tmp/groups.txt >/dev/null; echo "::warning::cat-rc=$?"
+          tail -n1 /tmp/groups.txt >/dev/null; echo "::warning::tail-standalone-rc=$?"
+          V=$(tail -n1 /tmp/groups.txt); echo "::warning::subshell-rc=$? len=${#V}"
+          printf 'groups<<EOF\n%s\nEOF\n' "$V" >> "$GITHUB_OUTPUT"; echo "::warning::ghout-write-rc=$?"
+          echo "groups value: $V"
       - name: Push tail tiles + done-markers to R2
         run: |
           # Tail overview tiles + downsampling done-markers feed the next incremental run,
