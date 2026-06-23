@@ -12,13 +12,15 @@
  *   - z > planet.max_zoom, a source overlay covers it → that overlay's tile
  *   - otherwise                  → OVERZOOM the planet's deepest ancestor tile
  *
- * Overzoom of Terrarium MUST be nearest-neighbour: every output pixel is an exact
- * source pixel = a real elevation. Bilinear would interpolate the packed RGB and
- * corrupt the decode. Contours need no overzoom — tippecanoe already bakes the
- * base lines to the deepest zoom, so that layer is a straight passthrough.
+ * Overzoom of Terrarium is bilinear ON DECODED HEIGHTS, not on the packed bytes:
+ * decode each source pixel to a float elevation, interpolate the elevations, re-encode.
+ * Averaging the raw RGB would corrupt the decode (G wraps at 256); nearest-neighbour
+ * leaves flat plateaus + cliff edges that the hillshade renders as stair-steps. Contours
+ * need no overzoom — tippecanoe bakes base lines to the deepest zoom, so it's passthrough.
  */
 
 import { PMTiles, Source, RangeResponse } from "pmtiles";
+import { unpackTerrarium, packTerrariumInto } from "./terrarium";
 // jSquash on Workers: WASM must be imported as a module and passed to init()
 // (no fetch-based instantiation in the Workers runtime).
 import decodeWebp, { init as initWebpDecode } from "@jsquash/webp/decode";
@@ -121,7 +123,11 @@ function intersects(a: number[], b: number[]): boolean {
   return a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
 }
 
-// ── Terrarium nearest-neighbour overzoom ────────────────────────────────────
+// ── Terrarium overzoom: bilinear on decoded heights ─────────────────────────
+// Decode the ancestor tile to elevations, bilinearly resample the elevations into the
+// output sub-tile, re-encode. Smooths the DEM the way MapLibre would for a client-side
+// overzoom, so the hillshade no longer steps. Sampling clamps to the ancestor's edge:
+// seams at ancestor-tile boundaries flatten slightly — far below the old stair-stepping.
 async function overzoom(
   env: Env,
   srcFile: string,
@@ -143,20 +149,35 @@ async function overzoom(
   await ensureCodec();
   const img = await decodeWebp(parent); // {data: Uint8ClampedArray RGBA, width, height}
   const src = img.data;
+  const W = img.width,
+    H = img.height;
   const out = new Uint8ClampedArray(TILE * TILE * 4);
   const srcSize = TILE / span; // pixels of the ancestor this sub-tile spans
   const ox = subX * srcSize,
     oy = subY * srcSize;
+  const h = (sx: number, sy: number) => {
+    const i = (sy * W + sx) * 4;
+    return unpackTerrarium(src[i], src[i + 1], src[i + 2]);
+  };
   for (let j = 0; j < TILE; j++) {
-    const sy = oy + Math.floor(j / span);
+    // output-pixel centre → fractional ancestor row, clamped inside the tile
+    let sy = oy + (j + 0.5) / span - 0.5;
+    sy = sy < 0 ? 0 : sy > H - 1 ? H - 1 : sy;
+    const y0 = sy | 0,
+      y1 = y0 + 1 < H ? y0 + 1 : y0,
+      wy = sy - y0;
     for (let i = 0; i < TILE; i++) {
-      const sx = ox + Math.floor(i / span);
-      const si = (sy * img.width + sx) * 4;
-      const di = (j * TILE + i) * 4;
-      out[di] = src[si];
-      out[di + 1] = src[si + 1];
-      out[di + 2] = src[si + 2];
-      out[di + 3] = src[si + 3];
+      let sx = ox + (i + 0.5) / span - 0.5;
+      sx = sx < 0 ? 0 : sx > W - 1 ? W - 1 : sx;
+      const x0 = sx | 0,
+        x1 = x0 + 1 < W ? x0 + 1 : x0,
+        wx = sx - x0;
+      const height =
+        h(x0, y0) * (1 - wx) * (1 - wy) +
+        h(x1, y0) * wx * (1 - wy) +
+        h(x0, y1) * (1 - wx) * wy +
+        h(x1, y1) * wx * wy;
+      packTerrariumInto(out, (j * TILE + i) * 4, height);
     }
   }
   return encodeWebp({ data: out, width: TILE, height: TILE } as ImageData, {
