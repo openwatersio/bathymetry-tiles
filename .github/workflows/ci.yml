@@ -343,10 +343,20 @@ jobs:
             echo "=== dmesg (last 60 — OOM-killer / segfault?) ==="; sudo dmesg 2>/dev/null | tail -60 || true
             exit "$rc"
           fi
+          # bundle-groups verifies the pyramid is whole then prints the group matrix.
+          # DIAGNOSTIC: tail succeeds (rc=0) but the step still fails here — capture
+          # bundle-groups' real exit code + full output (faulthandler/stderr merged).
+          docker run --rm -e FORCE_REBUILD -e PYTHONFAULTHANDLER=1 -e PYTHONUNBUFFERED=1 \
+            -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just bundle-groups > /tmp/groups.txt 2>&1
+          rc=$?
+          echo "::warning::bundle-groups exit code = $rc"
+          echo "=== bundle-groups output ==="; cat /tmp/groups.txt
+          if [ "$rc" != 0 ]; then
+            echo "=== dmesg (last 40) ==="; sudo dmesg 2>/dev/null | tail -40 || true
+            exit "$rc"
+          fi
           set -e
-          # bundle-groups verifies the pyramid is whole (fails here, before any overlay
-          # ships) then prints the group names as a JSON matrix.
-          GROUPS=$(docker run --rm -e FORCE_REBUILD -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just bundle-groups | tail -n1)
+          GROUPS=$(tail -n1 /tmp/groups.txt)
           echo "groups=$GROUPS" >> "$GITHUB_OUTPUT"
           echo "bundle groups: $GROUPS"
       - name: Push tail tiles + done-markers to R2
