@@ -62,12 +62,29 @@ def assign_source(z, x, y, sources):
     return best
 
 
+def covering_stems(aggregation_id):
+    """{z}-{x}-{y}-{child_z} of every tile the current covering builds (aggregate AND
+    downsample). The only pmtiles that belong in a bundle. A source's footprint/maxzoom
+    shift re-tiles its area to new stems, but the R2 sync has no --delete and the
+    dirty-diff only adds work, so the superseded pmtiles lingers; bundling it draws a
+    stale tile over the live tiling. Filter every glob/listing through this."""
+    return {
+        c.split("/")[-1].replace("-aggregation.csv", "").replace("-downsampling.csv", "")
+        for c in glob(f"store/aggregation/{aggregation_id}/*-aggregation.csv")
+        + glob(f"store/aggregation/{aggregation_id}/*-downsampling.csv")
+    }
+
+
 def group_filepaths(aggregation_id):
     """{'planet': [...], '<source>': [...]} grouping every single-zoom pmtiles."""
     sources = high_res_sources(aggregation_id)
+    stems = covering_stems(aggregation_id)
     groups = {}
     for fp in sorted(glob("store/pmtiles/*.pmtiles") + glob("store/pmtiles/*/*.pmtiles")):
-        z, x, y, child_z = (int(a) for a in fp.split("/")[-1].replace(".pmtiles", "").split("-"))
+        stem = fp.split("/")[-1].replace(".pmtiles", "")
+        if stem not in stems:  # orphan from a re-tiled covering (see covering_stems)
+            continue
+        z, x, y, child_z = (int(a) for a in stem.split("-"))
         name = "planet" if child_z <= PLANET_MAX_ZOOM else (assign_source(z, x, y, sources) or "planet")
         groups.setdefault(name, []).append(fp)
     return groups, sources
@@ -159,11 +176,7 @@ def verify_complete(aggregation_id):
     GEBCO into that hole, so it renders as missing high-zoom terrain. Fail rather than
     publish it. (downsampling.execute catches gaps a *running* shard sees; this catches a
     shard that produced nothing at all, which leaves nothing for execute to notice.)"""
-    coverings = {
-        c.split("/")[-1].replace("-aggregation.csv", "").replace("-downsampling.csv", "")
-        for c in glob(f"store/aggregation/{aggregation_id}/*-aggregation.csv")
-        + glob(f"store/aggregation/{aggregation_id}/*-downsampling.csv")
-    }
+    coverings = covering_stems(aggregation_id)
     have = {fp.split("/")[-1].replace(".pmtiles", "")
             for fp in glob("store/pmtiles/*.pmtiles") + glob("store/pmtiles/*/*.pmtiles")}
     missing = sorted(coverings - have)
@@ -211,14 +224,18 @@ def group_keys(name):
     files — so a matrix job pulls ONLY its group's slice, never the whole store."""
     aggregation_id = utils.get_aggregation_ids()[-1]
     sources = high_res_sources(aggregation_id)
+    stems = covering_stems(aggregation_id)
     out = []
     with open("store/pmtiles-keys.txt") as f:
         for key in f:
             key = key.strip()
             if not key.endswith(".pmtiles"):
                 continue
+            stem = key.split("/")[-1].replace(".pmtiles", "")
+            if stem not in stems:  # orphan from a re-tiled covering (see covering_stems)
+                continue
             try:
-                z, x, y, child_z = (int(a) for a in key.split("/")[-1].replace(".pmtiles", "").split("-"))
+                z, x, y, child_z = (int(a) for a in stem.split("-"))
             except ValueError:
                 continue
             g = "planet" if child_z <= PLANET_MAX_ZOOM else (assign_source(z, x, y, sources) or "planet")

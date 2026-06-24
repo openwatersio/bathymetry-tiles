@@ -216,6 +216,44 @@ jobs:
               aws s3 rm "s3://$DATA_BUCKET/bathymetry/aggregation/$id" --recursive
             }
           done
+      - name: Prune orphaned contour FGBs (covering re-tiled)
+        run: |
+          # store/contour FGBs are keyed {z}-{x}-{y}-{child_z}, same as the covering's
+          # aggregation tiles. A source's footprint/maxzoom shift re-tiles its area, but
+          # the sync (line ~270) has no --delete, so the superseded FGB lingers in R2 and
+          # contour bundle globs EVERY FGB → two contour sets overlap. Drop any R2 FGB
+          # whose stem isn't a current-covering tile (this job just wrote the covering).
+          id=$(ls store/aggregation | sort | tail -1)
+          ls "store/aggregation/$id"/*-aggregation.csv | sed 's#.*/##; s/-aggregation\.csv$//' | sort > /tmp/valid-stems.txt
+          aws s3 ls "s3://$DATA_BUCKET/bathymetry/contour/" --recursive | awk '{print $NF}' | grep '\.fgb$' > /tmp/r2-fgbs.txt || true
+          while read -r key; do
+            [ -n "$key" ] || continue
+            grep -qx "$(basename "$key" .fgb)" /tmp/valid-stems.txt || {
+              echo "pruning orphan contour $key"
+              aws s3 rm "s3://$DATA_BUCKET/$key"
+            }
+          done < /tmp/r2-fgbs.txt
+      - name: Prune orphaned pmtiles (covering re-tiled)
+        run: |
+          # Same orphan class as the contour prune: a re-tiled covering leaves the old
+          # tile's pmtiles in R2 (sync has no --delete). bundle.py already filters orphans
+          # out at bundle time, so this is storage hygiene — keeps the pmtiles listing the
+          # dirty-diff/group-keys scan from growing dead keys. Valid stems = this covering's
+          # aggregate AND downsample tiles (downsample also emits pmtiles; cover ran both).
+          id=$(ls store/aggregation | sort | tail -1)
+          ls "store/aggregation/$id"/*-aggregation.csv "store/aggregation/$id"/*-downsampling.csv 2>/dev/null \
+            | sed 's#.*/##; s/-aggregation\.csv$//; s/-downsampling\.csv$//' | sort -u > /tmp/valid-pmt-stems.txt
+          aws s3 ls "s3://$DATA_BUCKET/bathymetry/pmtiles/" --recursive | awk '{print $NF}' | grep '\.pmtiles$' | sort > /tmp/r2-pmt-keys.txt || true
+          sed 's#.*/##; s/\.pmtiles$//' /tmp/r2-pmt-keys.txt | sort -u | comm -23 - /tmp/valid-pmt-stems.txt > /tmp/orphan-pmt-stems.txt
+          if [ -s /tmp/orphan-pmt-stems.txt ]; then
+            while read -r key; do
+              [ -n "$key" ] || continue
+              grep -qxF "$(basename "$key" .pmtiles)" /tmp/orphan-pmt-stems.txt && {
+                echo "pruning orphan pmtiles $key"
+                aws s3 rm "s3://$DATA_BUCKET/$key"
+              }
+            done < /tmp/r2-pmt-keys.txt
+          fi
       - id: m
         name: Emit aggregate shard matrix
         run: |

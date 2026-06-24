@@ -189,6 +189,28 @@ def _global_maxz(fgbs):
     return max(int(f.split("/")[-1].replace(".fgb", "").split("-")[3]) for f in fgbs)
 
 
+def _current_stems():
+    """{z}-{x}-{y}-{child_z} of every tile in the newest covering — the only contour
+    FGBs that belong in the bundle. None when no covering is present locally (the CI
+    contour-shard job reads a pre-pruned R2 set without pulling the covering), so the
+    caller falls back to every FGB it has."""
+    ids = utils.get_aggregation_ids()
+    if not ids:
+        return None
+    csvs = glob(f"store/aggregation/{ids[-1]}/*-aggregation.csv")
+    return {c.split("/")[-1].replace("-aggregation.csv", "") for c in csvs} or None
+
+
+def _live_fgbs(fgbs, stems):
+    """Drop FGBs orphaned by a covering re-tiling. A source's footprint/maxzoom shift
+    re-tiles its area (different z/x/y/child_z), but sync has no --delete, so the
+    superseded FGB lingers; bundling it alongside the new tiling draws two overlapping
+    contour sets. Keep only current-covering stems; keep all when stems is None."""
+    if stems is None:
+        return fgbs
+    return [f for f in fgbs if f.split("/")[-1].replace(".fgb", "") in stems]
+
+
 def bundle(shard=None):
     """tippecanoe the local contour FGBs into pmtiles. Whole set (contours.pmtiles)
     by default; with a shard index → contours-shard-{shard}.pmtiles, which
@@ -196,7 +218,7 @@ def bundle(shard=None):
     planet scale). The CI pulls only this shard's FGB slice and writes the GLOBAL maxz
     to store/contour-maxz.txt, so every shard tiles to the same depth and tile-joins
     cleanly; a local whole-set build derives maxz from the FGBs it has."""
-    fgbs = sorted(glob("store/contour/*.fgb"))
+    fgbs = _live_fgbs(sorted(glob("store/contour/*.fgb")), _current_stems())
     if not fgbs:
         print("contour bundle: no contour FGBs")
         return
@@ -230,7 +252,11 @@ def _check():
     assert _drop_small_rings(ring(100), MIN_RING_AREA_M2) is None        # ~0.03 km² → drop
     assert _drop_small_rings(ring(3000), MIN_RING_AREA_M2) is not None   # ~28 km²  → keep
     assert _drop_small_rings(LineString([(0, 0), (5e3, 0), (1e4, 5e3)]), MIN_RING_AREA_M2) is not None  # open line kept
-    print("contour_run ring-drop self-check ok")
+    # orphan-FGB filter: keep only current-covering stems; passthrough when stems is None
+    fgbs = ["store/contour/4-5-6-8.fgb", "store/contour/11-300-400-13.fgb"]
+    assert _live_fgbs(fgbs, {"11-300-400-13"}) == ["store/contour/11-300-400-13.fgb"]
+    assert _live_fgbs(fgbs, None) == fgbs
+    print("contour_run ring-drop + orphan-filter self-check ok")
 
 
 if __name__ == "__main__":

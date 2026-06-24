@@ -128,6 +128,19 @@ def main():
         assert not (gsel[0] & gsel[1]), f"groups overlap: {gsel[0] & gsel[1]}"
         print(f"group-keys ok — {len(pmtiles)} pmtiles partitioned across {len(names)} group(s)")
 
+        # orphan exclusion: a pmtiles left from a re-tiled covering (stem not in the
+        # current covering) must land in NO group, else it double-bundles a stale tile
+        # over the live tiling (the raster twin of the contour-overlap bug).
+        orphan = "0-0-0-99.pmtiles"
+        with open(f"{tmp}/store/pmtiles-keys.txt", "a") as f:
+            f.write(f"pmtiles/{orphan}\n")
+        for name in names:
+            run(tmp, "bundle.py", "group-keys", name)
+            with open(f"{tmp}/store/keys.txt") as f:
+                got = {os.path.basename(l.strip()) for l in f if l.strip()}
+            assert orphan not in got, f"orphan {orphan} leaked into group {name}"
+        print(f"orphan-exclusion ok — {orphan} excluded from every group")
+
         # covering wrote the cap into child_z: the deepest aggregation tile is z9, not z11.
         agg_dir = f"{tmp}/store/aggregation"
         agg_id = sorted(os.listdir(agg_dir))[-1]
