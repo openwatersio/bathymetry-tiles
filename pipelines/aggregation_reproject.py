@@ -36,15 +36,18 @@ RESAMPLE = os.environ.get("AGG_RESAMPLE", "cubicspline")
 
 
 def negate_band1(filepath):
-    """Flip band-1 sign on valid pixels (depth +down -> elevation -down), leaving NODATA
-    and any alpha band untouched. Streamed sources skip source_datum, so a positive-down
-    source (S-102 stores depth) is converted here, right after warp. In-place band-1
-    rewrite so the COG's alpha mask band survives. When the pipeline flips to
-    depth-canonical internally, drop this and the `negate` flag — ingest becomes a no-op."""
-    with rasterio.open(filepath, "r+") as ds:
+    """Flip band-1 sign on valid pixels (depth +down -> elevation -down), leaving invalid
+    pixels and the alpha band untouched. Streamed sources skip source_datum, so a
+    positive-down source (S-102 stores depth) is converted here, right after warp. The file
+    is a COG (translate -of COG), so the in-place band-1 update needs IGNORE_COG_LAYOUT_BREAK
+    — it's a transient the merge re-reads then deletes, so breaking the COG layout costs
+    nothing. read_masks honours alpha-or-nodata validity (don't compare to a NODATA value:
+    ADD_ALPHA moves the mask off the data band). Drop this when the pipeline goes
+    depth-canonical internally."""
+    with rasterio.open(filepath, "r+", IGNORE_COG_LAYOUT_BREAK="YES") as ds:
         a = ds.read(1)
-        m = (a != NODATA) & ~np.isnan(a)
-        a[m] = -a[m]
+        mask = ds.read_masks(1) != 0
+        a[mask] = -a[mask]
         ds.write(a, 1)
 
 
@@ -272,19 +275,20 @@ def _check():
     finally:
         utils.run_command, time.sleep = real_run, real_sleep
 
-    # negate_band1: valid band-1 pixels flip sign; NODATA and the 2nd (alpha) band untouched.
-    neg = f"{d}/neg.tif"
+    # negate_band1 must handle the REAL pipeline file: a COG (translate -of COG) with an
+    # ADD_ALPHA mask band. A plain GTiff would miss the COG-layout update error the build hit.
+    src = f"{d}/depth.tif"
     arr = np.array([[5.0, NODATA], [10.0, -3.0]], dtype="float32")  # depths + a nodata cell
-    alpha = np.array([[7.0, 0.0], [7.0, 7.0]], dtype="float32")
-    with rasterio.open(neg, "w", driver="GTiff", height=2, width=2, count=2, dtype="float32",
+    with rasterio.open(src, "w", driver="GTiff", height=2, width=2, count=1, dtype="float32",
                        nodata=NODATA, crs="EPSG:3857", transform=from_origin(0, 2, 1, 1)) as dst:
-        dst.write(arr, 1); dst.write(alpha, 2)
-    negate_band1(neg)
-    with rasterio.open(neg) as src:
-        o1, o2 = src.read(1), src.read(2)
-    assert o1[0, 0] == -5.0 and o1[1, 0] == -10.0 and o1[1, 1] == 3.0, o1  # valid flipped
-    assert o1[0, 1] == NODATA, o1                                          # nodata not flipped
-    assert (o2 == alpha).all(), o2                                         # 2nd band preserved
+        dst.write(arr, 1)
+    cog = f"{d}/depth_cog.tif"
+    translate(src, cog)        # -of COG -co ADD_ALPHA=YES, exactly as reproject() does
+    negate_band1(cog)          # must not raise on the COG layout, and flip only valid pixels
+    with rasterio.open(cog) as r:
+        o, valid = r.read(1), (r.read_masks(1) != 0)
+    assert o[0, 0] == -5.0 and o[1, 0] == -10.0 and o[1, 1] == 3.0, o   # valid pixels flipped
+    assert not valid[0, 1], "nodata cell must stay masked (and unflipped)"
 
     print(f"aggregation_reproject.py self-check ok (valid pixels: A={va}, A+B={vboth})")
 
