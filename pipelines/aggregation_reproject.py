@@ -170,7 +170,10 @@ def reproject(filepath):
         return
 
     grouped = utils.get_grouped_source_items(filepath)
-    maxzoom = grouped[0][0]["maxzoom"]
+    # Build at the FINEST source's resolution, not the top-priority group's: merge order is
+    # priority-then-maxzoom, so grouped[0] may be a coarser datum-authoritative source (S-102)
+    # — don't let it lower the grid and upsample a finer source that's also present.
+    maxzoom = max(g[0]["maxzoom"] for g in grouped)
     resolution = get_resolution(maxzoom)
 
     # Always buffer (even single-source) so the merged DEM has a halo for contour

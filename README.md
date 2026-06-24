@@ -85,7 +85,7 @@ MapLibre's attribution control credits the sources automatically.
 
 ## Data sources
 
-Sources are merged by priority derived from resolution, so finer data wins where they overlap. Each is built under [`sources/`](sources/):
+Sources are merged by priority: resolution-derived (finer data wins where they overlap), except a datum-authoritative source (`priority` in metadata — e.g. S-102, already on a chart datum) wins the overlap even over a finer one. Each is built under [`sources/`](sources/):
 
 - **[NOAA S-102](sources/noaa_s102/)** — ~4–16 m, US navigable · NOAA Office of Coast Survey · public domain · already MLLW + per-node uncertainty
 - **[NOAA CUDEM 1/9″](sources/cudem/)** — ~3 m, US coast · NOAA NCEI · public domain
