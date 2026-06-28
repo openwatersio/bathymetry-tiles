@@ -92,6 +92,53 @@ def check_priority():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def check_shard_partition():
+    """The frozen work list must give a complete, disjoint shard partition that does NOT drift
+    when the set of already-built tiles changes. The bug: each shard recomputed the dirty list
+    itself, so as sibling shards filled in the store the missing set — hence the [i::n] stride —
+    differed per shard, and a self-heal (missing) tile could land at an index matching no
+    shard's `i`. It was then never built, and downsample aborted 'pyramid incomplete'. A single
+    frozen list makes every shard partition the identical work."""
+    import aggregation_run
+    env_force = os.environ.pop("FORCE_REBUILD", None)  # this check is about the incremental path
+    tmp = tempfile.mkdtemp()
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp)
+        prev, cur = "01AAAAAAAAAAAAAAAAAAAAAAAA", "01BBBBBBBBBBBBBBBBBBBBBBBB"
+        tiles = [f"8-{x}-{y}-12" for x in range(10) for y in range(10)]  # 100 same-cost tiles
+        for aid in (prev, cur):
+            os.makedirs(f"store/aggregation/{aid}")
+            for t in tiles:
+                open(f"store/aggregation/{aid}/{t}-aggregation.csv", "w").close()
+        # No coverage change (identical empty CSVs) → dirty is purely the self-heal set: tiles
+        # whose pmtiles is absent from the listing. Mark every other tile present.
+        present = tiles[::2]
+        keys = "".join(f"bathymetry/pmtiles/7-0-0/{t}.pmtiles\n" for t in present)
+        with open("store/pmtiles-keys.txt", "w") as f:
+            f.write(keys)
+        aggregation_run.freeze()
+        frozen = aggregation_run.work_list()
+        missing = {f"store/aggregation/{cur}/{t}-aggregation.csv" for t in tiles if t not in present}
+        assert set(frozen) == missing, f"frozen list != self-heal set (Δ {set(frozen) ^ missing})"
+        n = 7
+        slices = [aggregation_run.work_list()[i::n] for i in range(n)]
+        flat = [fp for s in slices for fp in s]
+        assert sorted(flat) == sorted(frozen), f"partition drops/dupes tiles: {set(frozen) ^ set(flat)}"
+        assert len(flat) == len(set(flat)), "shards overlap"
+        # Regression: the store filling in later (everything now present) must still yield the
+        # SAME work — the frozen list is authoritative, so the partition cannot drift.
+        with open("store/pmtiles-keys.txt", "w") as f:
+            f.write("".join(f"bathymetry/pmtiles/7-0-0/{t}.pmtiles\n" for t in tiles))
+        assert aggregation_run.work_list() == frozen, "work_list drifted after the live listing changed"
+        print(f"shard-partition ok — {len(missing)} self-heal tiles, complete+disjoint across {n} shards, frozen vs live")
+    finally:
+        os.chdir(cwd)
+        shutil.rmtree(tmp, ignore_errors=True)
+        if env_force is not None:
+            os.environ["FORCE_REBUILD"] = env_force
+
+
 def main():
     tmp = tempfile.mkdtemp()
     try:
@@ -106,6 +153,7 @@ def main():
         run(tmp, "aggregation_covering.py")
         run(tmp, "aggregation_run.py")
         run(tmp, "downsampling.py", "cover")
+        run(tmp, "downsampling.py", "freeze")  # the CI path: shards + tail read this frozen list
         # Exercise the CI fan-out (deep shards + coarse tail), not just the single
         # run() — both shards then the tail must reproduce a correct full pyramid.
         run(tmp, "downsampling.py", "run", "shard", "0", "2")
@@ -207,4 +255,5 @@ def main():
 
 if __name__ == "__main__":
     check_priority()
+    check_shard_partition()
     main()

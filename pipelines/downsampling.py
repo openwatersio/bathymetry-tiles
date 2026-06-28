@@ -201,13 +201,14 @@ def shard_ancestor(filepath):
 
 def owned_ancestors(i, n):
     """The strided slice of dirty deep ancestors shard i of n owns (the same split
-    run() and matrix() use), so shard-keys and run agree on what a shard touches."""
-    ancestors = sorted({a for fp in dirty_filepaths() if (a := shard_ancestor(fp)) is not None})
+    run() and matrix() use), so shard-keys and run agree on what a shard touches.
+    Derived from the frozen work list, so every shard computes the identical split."""
+    ancestors = sorted({a for fp in work_list() if (a := shard_ancestor(fp)) is not None})
     return set(ancestors[i::n])
 
 
 def shard_keys(i, n):
-    """Filter store/pmtiles-keys.txt (the R2 listing) to the tiles shard i reads —
+    """Filter store/pmtiles-keys.txt (the listing of already-built tiles) to the tiles shard i reads —
     those under its owned ancestors — and write them to store/shard-keys.txt. Lets CI
     pull a shard's slice of the pmtiles store instead of the whole tens-of-GB store
     (a tile's extent zoom is monotonic with content, so everything a shard reads sits
@@ -267,6 +268,30 @@ def dirty_filepaths():
     return out
 
 
+FROZEN = "_dirty-downsample.txt"
+
+
+def freeze():
+    """Write the dirty downsampling work list into the covering dir, computed once, so it
+    travels with the covering to every shard + the tail — see aggregation_run.freeze."""
+    aggregation_id = utils.get_aggregation_ids()[-1]
+    with open(f"store/aggregation/{aggregation_id}/{FROZEN}", "w") as f:
+        f.write("".join(fp + "\n" for fp in dirty_filepaths()))
+
+
+def work_list():
+    """The frozen dirty list if present — so every deep shard AND the tail derive the SAME
+    owned-ancestor split and the SAME work, instead of each recomputing it as the store filled
+    in underneath them (which left tiles owned by no shard). Live fallback for local runs.
+    See aggregation_run.work_list."""
+    aggregation_id = utils.get_aggregation_ids()[-1]
+    path = f"store/aggregation/{aggregation_id}/{FROZEN}"
+    if os.path.isfile(path):
+        with open(path) as f:
+            return [line.strip() for line in f if line.strip()]
+    return dirty_filepaths()
+
+
 def execute(filepaths):
     by_child_zoom = {}
     for filepath in filepaths:
@@ -316,7 +341,7 @@ def run(shard=None, tail=False):
       ``tail=True``    — only the coarse levels whose archives span ancestors
         (extent < SHARD_ROOT_Z); a few cheap global levels, run on one runner once
         every shard has landed (a tail parent reads tiles the shards built)."""
-    filepaths = dirty_filepaths()
+    filepaths = work_list()
     if tail:
         filepaths = [fp for fp in filepaths if shard_ancestor(fp) is None]
     elif shard is not None:
@@ -328,7 +353,7 @@ def run(shard=None, tail=False):
 def matrix(maxn):
     """Print the CI deep-shard matrix JSON: <= maxn shards, >= 1, sized to the
     number of distinct ancestors in the dirty deep set."""
-    ancestors = {a for fp in dirty_filepaths() if (a := shard_ancestor(fp)) is not None}
+    ancestors = {a for fp in work_list() if (a := shard_ancestor(fp)) is not None}
     n = min(maxn, max(len(ancestors), 1))
     print(json.dumps([{"i": i, "n": n} for i in range(n)]))
 
@@ -337,6 +362,8 @@ if __name__ == "__main__":
     argv = sys.argv[1:]
     if argv == ["cover"]:
         cover()
+    elif argv == ["freeze"]:
+        freeze()
     elif argv == ["run"]:
         run()
     elif argv[:2] == ["run", "tail"]:
@@ -348,5 +375,5 @@ if __name__ == "__main__":
     elif argv[:1] == ["shard-keys"] and len(argv) == 3:
         shard_keys(int(argv[1]), int(argv[2]))
     else:
-        sys.exit("usage: downsampling.py <cover | run [shard <i> <n> | tail] | "
+        sys.exit("usage: downsampling.py <cover | freeze | run [shard <i> <n> | tail] | "
                  "matrix <max> | shard-keys <i> <n>>")

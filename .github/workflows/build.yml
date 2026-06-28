@@ -176,6 +176,16 @@ jobs:
           # so the sharded downsample job downstream sees the same plan from R2.
           docker run --rm -e BBOX -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just cover
           docker run --rm -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just downsample-cover
+      - name: Freeze the dirty work lists
+        run: |
+          # Compute the aggregate + downsample dirty sets ONCE, from this single R2 listing
+          # (store/pmtiles-keys.txt above), and write them into the covering dir so they ride
+          # in the covering tarball to every shard. Each shard then strides the SAME frozen
+          # list instead of re-listing R2 at its own start: across matrix waves those listings
+          # drifted (earlier shards had already pushed tiles), which shifted the [i::n] stride
+          # and left some self-heal tiles owned by no shard — silently never built, then
+          # downsample aborted "pyramid incomplete: <tile> missing". One list = one partition.
+          docker run --rm -e FORCE_REBUILD -v "$PWD/store:/app/pipelines/store" "$IMAGE:${{ github.sha }}" just freeze-work
       - name: Push covering to R2
         run: |
           # One gzipped tar per covering (covering.tar.gz) instead of ~2k loose CSVs —
@@ -265,12 +275,12 @@ jobs:
       # public R2 (and CUDEM from public NOAA). Only the covering + pmtiles keys.
       - name: Pull covering from R2
         uses: ./.github/actions/pull-covering
-      - name: Pull pmtiles index from R2
+      - name: Prepare store
         run: |
+          # No R2 listing here: the shard reads its work from the plan's frozen dirty list
+          # (shipped in the covering tarball, pulled above), so every shard partitions the
+          # SAME list. Reproject range-reads sources via /vsicurl, so no pmtiles are pulled.
           mkdir -p store/pmtiles store/contour
-          # Same pmtiles listing the plan used, so shards re-derive the identical
-          # dirty set (changed tiles + any whose pmtiles is missing).
-          aws s3 ls "s3://$DATA_BUCKET/bathymetry/pmtiles/" --recursive | awk '{print $4}' > store/pmtiles-keys.txt || true
       - name: Aggregate shard ${{ matrix.shard.i }}/${{ matrix.shard.n }}
         run: |
           # SOURCE_VSI_BASE → reproject resolves each source tile to a public /vsicurl

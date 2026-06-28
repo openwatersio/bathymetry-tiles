@@ -6,11 +6,12 @@ skips those already marked done, and parallelizes across tiles with a process po
 
 CLI:
   aggregation_run.py                 process every dirty tile (local `just planet`)
-  aggregation_run.py shard <i> <n>   process dirty[i::n] (CI matrix shard i of n)
-  aggregation_run.py matrix <max>    print the CI shard matrix JSON (sized to dirt)
+  aggregation_run.py freeze          write the dirty list into the covering (plan, once)
+  aggregation_run.py shard <i> <n>   process the frozen dirty[i::n] (matrix shard i of n)
+  aggregation_run.py matrix <max>    print the shard matrix JSON (sized to the dirt)
 
-`shard` re-derives the same sorted dirty list each runner pulls from R2 and takes a
-strided slice, so shards partition the work with no overlap and no coordination.
+`shard` takes a strided slice of the single dirty list `freeze` wrote, so every shard
+partitions the identical list — no overlap, no coordination, nothing recomputed per shard.
 """
 
 import json
@@ -48,39 +49,75 @@ def run(filepath):
     print(f"{item} end")
 
 
-def dirty_filepaths():
-    """Sorted aggregation CSVs to (re)build: tiles whose covering changed since the
-    previous run (all on the first run) PLUS any whose pmtiles is missing; minus any
-    already marked .done. The missing-pmtiles check is load-bearing: `plan` pushes
-    coverings to R2 before aggregate builds them, so a prior failed build can leave a
-    covering with no tile — without this the diff would call it clean forever."""
+def covering_sorted():
+    """Every aggregation CSV in the current covering, heaviest-first. Depends ONLY on the
+    immutable covering, never on which tiles are already built — so every shard derives the
+    identical tile order, and thus identical ownership, regardless of when it runs. child_z
+    is a strong cost proxy (each level quadruples output tiles + contour features), so the
+    heaviest-first stride hands each shard a balanced mix."""
+    aggregation_id = utils.get_aggregation_ids()[-1]
+    csvs = glob(f"store/aggregation/{aggregation_id}/*-aggregation.csv")
+
+    def child_z(fp):
+        return int(fp.split("/")[-1].replace("-aggregation.csv", "").split("-")[3])
+    return sorted(csvs, key=lambda fp: (-child_z(fp), fp))
+
+
+def dirty_predicate():
+    """is_dirty(csv) → needs (re)build: covering changed since the previous run (all on the
+    first run) OR its pmtiles is missing, and not already marked .done. The missing-pmtiles
+    check is load-bearing self-heal: a covering is recorded before its tile is built, so a
+    prior failed build can leave a covering with no tile — without this the diff would call
+    it clean forever."""
     aggregation_ids = utils.get_aggregation_ids()
     aggregation_id = aggregation_ids[-1]
-    all_csvs = sorted(glob(f"store/aggregation/{aggregation_id}/*-aggregation.csv"))
     if len(aggregation_ids) < 2:
-        changed = set(all_csvs)
+        changed = None  # first run → everything is dirty
     else:
         names = utils.get_dirty_aggregation_filenames(aggregation_id, aggregation_ids[-2])
         changed = {f"store/aggregation/{aggregation_id}/{name}" for name in names}
-
     have = utils.existing_pmtiles()
 
-    def needs_build(csv):
-        if csv in changed:
+    def is_dirty(csv):
+        if os.path.isfile(csv.replace("-aggregation.csv", "-aggregation.done")):
+            return False
+        if changed is None or csv in changed:
             return True
         pmtiles = csv.split("/")[-1].replace("-aggregation.csv", "") + ".pmtiles"
         return pmtiles not in have
+    return is_dirty
 
-    dirty = [fp for fp in all_csvs if needs_build(fp)]
-    dirty = [fp for fp in dirty if not os.path.isfile(fp.replace("-aggregation.csv", "-aggregation.done"))]
-    # Order heaviest-first so the strided shard slices (dirty[i::n]) each draw a
-    # balanced mix instead of one shard piling up the dense high-zoom tiles (the
-    # straggler). child_z is a strong cost proxy: each level quadruples the output
-    # tiles and multiplies the contour feature count. Deterministic, so every runner
-    # derives the identical order and the shards still partition with no overlap.
-    def child_z(fp):
-        return int(fp.split("/")[-1].replace("-aggregation.csv", "").split("-")[3])
-    return sorted(dirty, key=lambda fp: (-child_z(fp), fp))
+
+def dirty_filepaths():
+    """All dirty tiles, heaviest-first — the work list for a single-machine `just planet`."""
+    is_dirty = dirty_predicate()
+    return [fp for fp in covering_sorted() if is_dirty(fp)]
+
+
+FROZEN = "_dirty-aggregate.txt"
+
+
+def freeze():
+    """Write the dirty work list into the covering dir, computed ONCE, so it travels with the
+    covering to every shard and they all partition the identical list."""
+    aggregation_id = utils.get_aggregation_ids()[-1]
+    with open(f"store/aggregation/{aggregation_id}/{FROZEN}", "w") as f:
+        f.write("".join(fp + "\n" for fp in dirty_filepaths()))
+
+
+def work_list():
+    """The frozen dirty list if present (every shard reads the SAME one, so the [i::n] stride
+    partitions identically across shards), else compute it live (local single-machine runs).
+    Freezing is load-bearing for sharding: when each shard recomputed the dirty set itself it
+    saw the store at a different moment — as sibling shards filled it in, the missing set (and
+    so the list order) shifted, which moved the stride and left some self-heal tile owned by no
+    shard. It silently never got built, and downsample then aborted 'pyramid incomplete'."""
+    aggregation_id = utils.get_aggregation_ids()[-1]
+    path = f"store/aggregation/{aggregation_id}/{FROZEN}"
+    if os.path.isfile(path):
+        with open(path) as f:
+            return [line.strip() for line in f if line.strip()]
+    return dirty_filepaths()
 
 
 def run_all(filepaths):
@@ -97,18 +134,20 @@ def run_all(filepaths):
 
 
 def main(argv):
-    if argv[:1] == ["matrix"]:
+    if argv == ["freeze"]:
+        freeze()
+    elif argv[:1] == ["matrix"]:
         # Size the CI matrix to the dirt: <= max shards, >= 1 (a clean run still
         # spins one no-op shard, keeping the bundle's `needs` graph simple).
-        n = min(int(argv[1]), max(len(dirty_filepaths()), 1))
+        n = min(int(argv[1]), max(len(work_list()), 1))
         print(json.dumps([{"i": i, "n": n} for i in range(n)]))
     elif argv[:1] == ["shard"]:
         i, n = int(argv[1]), int(argv[2])
-        run_all(dirty_filepaths()[i::n])
+        run_all(work_list()[i::n])
     elif not argv:
         run_all(dirty_filepaths())
     else:
-        sys.exit("usage: aggregation_run.py [shard <i> <n> | matrix <max>]")
+        sys.exit("usage: aggregation_run.py [freeze | shard <i> <n> | matrix <max>]")
 
 
 if __name__ == "__main__":

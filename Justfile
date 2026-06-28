@@ -29,6 +29,14 @@ planet:
 cover:
     uv run python aggregation_covering.py
 
+# Freeze the aggregate + downsample dirty work lists into the covering dir (plan job, after
+# cover, before the covering tarball is pushed). Every shard then reads the SAME list from the
+# covering instead of re-listing R2 itself — one partition, computed once, so no self-heal tile
+# slips between shards whose listings drifted across matrix waves.
+freeze-work:
+    uv run python aggregation_run.py freeze
+    uv run python downsampling.py freeze
+
 # Run one aggregate shard i of n — the CI fan-out unit (`aggregation_run.py` alone = all dirty).
 aggregate i n:
     uv run python aggregation_run.py shard {{i}} {{n}}
