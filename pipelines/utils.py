@@ -188,6 +188,35 @@ def existing_pmtiles():
     return {p.split("/")[-1] for p in glob("store/pmtiles/**/*.pmtiles", recursive=True)}
 
 
+def pmtiles_mtimes():
+    """Basename -> last-modified epoch seconds, for the overview staleness check. From a
+    prebuilt store/pmtiles-mtimes.txt listing (``<YYYY-MM-DD HH:MM:SS>\\t<key>`` per line) when
+    present, else each pmtiles' own file mtime. The downsample dirty-diff rebuilds any overview
+    older than a child it averages: a child rebuilt by a later run/self-heal never re-dirtied its
+    parent, so the coarse overview kept averaging the old child and went stale. Empty/absent =>
+    {}, and the diff falls back to its other signals (so a missing listing never marks all stale)."""
+    import calendar
+    import time
+
+    path = "store/pmtiles-mtimes.txt"
+    out = {}
+    if os.path.isfile(path):
+        with open(path) as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if "\t" not in line:
+                    continue
+                ts, key = line.split("\t", 1)
+                try:
+                    out[key.split("/")[-1]] = calendar.timegm(time.strptime(ts, "%Y-%m-%d %H:%M:%S"))
+                except ValueError:
+                    continue
+        return out
+    for p in glob("store/pmtiles/**/*.pmtiles", recursive=True):
+        out[p.split("/")[-1]] = os.path.getmtime(p)
+    return out
+
+
 def get_grouped_source_items(filepath):
     '''Group source items per (priority, maxzoom, source), most-important first. Merge
     order is priority DESC then maxzoom DESC: a source with metadata `priority` > 0 (e.g.

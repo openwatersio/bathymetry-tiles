@@ -233,12 +233,20 @@ def shard_keys(i, n):
 
 
 def dirty_filepaths():
-    """Sorted -downsampling.csv to (re)build — the aggregate stage's dirty-diff lifted to
-    the downsampling coverings: changed tiles, OR whose pmtiles is gone. The missing-pmtiles
-    case is load-bearing (same as aggregation_run): a covering whose pmtiles a prior run
-    failed to produce/sync would otherwise diff clean forever, so the hole would never
-    refill. With it, the next run re-marks that tile dirty and the level cascade rebuilds it
-    (its children one level down are dirty too, or already present)."""
+    """Sorted -downsampling.csv to (re)build: changed tiles, OR whose pmtiles is gone, OR a
+    STALE overview — older than a child it averages, or reading a child about to be rebuilt.
+
+    The missing-pmtiles case is load-bearing (same as aggregation_run): a covering whose
+    pmtiles a prior run failed to produce/sync would otherwise diff clean forever.
+
+    The stale-overview cases are equally load-bearing and were the gap. The source-change diff
+    and the missing-own-pmtiles check only fire when a tile's OWN covering changes or its OWN
+    pmtiles vanishes — neither notices when a *child* is rebuilt for any other reason (a dropped
+    shard self-healing from current data, a re-tiling). So the coarse overview above kept
+    averaging the old child and went stale forever (observed: a z6 tile 4 days older than the
+    z7 it averages). So also rebuild an overview when a child it references is missing now
+    (about to self-heal) or is newer than it. Processing finest-overview-first and treating a
+    rebuilt overview as newest makes the staleness cascade all the way up the pyramid in one pass."""
     aggregation_ids = utils.get_aggregation_ids()
     aggregation_id = aggregation_ids[-1]
 
@@ -249,8 +257,9 @@ def dirty_filepaths():
             dirty_tiles.append(mercantile.Tile(x=x, y=y, z=z))
 
     have = utils.existing_pmtiles()
+    mtimes = utils.pmtiles_mtimes()
 
-    def is_dirty(tile, filename):
+    def base_dirty(tile, filename):
         if filename.replace("-downsampling.csv", ".pmtiles") not in have:
             return True
         if len(aggregation_ids) < 2:
@@ -259,13 +268,35 @@ def dirty_filepaths():
             return True
         return len(glob(f"store/aggregation/{aggregation_ids[-2]}/{filename}")) == 0
 
+    def children_of(filepath):
+        with open(filepath) as f:
+            return [line.strip() for line in f.readlines()[1:] if line.strip()]
+
+    def parent_zoom(filepath):
+        return int(filepath.split("/")[-1].replace("-downsampling.csv", "").split("-")[3])
+
+    # Finest overview first (high parent_zoom -> low) so a child is decided before the overview
+    # that reads it; a child marked dirty here is bumped to "newest" so the rebuild cascades up.
     out = []
-    for filepath in sorted(glob(f"store/aggregation/{aggregation_id}/*-downsampling.csv")):
+    for filepath in sorted(glob(f"store/aggregation/{aggregation_id}/*-downsampling.csv"),
+                           key=lambda fp: (-parent_zoom(fp), fp)):
         filename = filepath.split("/")[-1]
         z, x, y, _ = (int(a) for a in filename.replace("-downsampling.csv", "").split("-"))
-        if is_dirty(mercantile.Tile(x=x, y=y, z=z), filename):
+        own = filename.replace("-downsampling.csv", ".pmtiles")
+        dirty = base_dirty(mercantile.Tile(x=x, y=y, z=z), filename)
+        if not dirty:
+            children = children_of(filepath)
+            own_mt = mtimes.get(own)
+            if any(c not in have for c in children):
+                dirty = True  # a referenced child is missing -> self-healed this run -> so is this
+            elif own_mt is not None:
+                newest_child = max((mtimes[c] for c in children if c in mtimes), default=None)
+                if newest_child is not None and newest_child > own_mt:
+                    dirty = True  # overview older than a child it averages -> stale
+        if dirty:
             out.append(filepath)
-    return out
+            mtimes[own] = float("inf")  # rebuilt now = newest, so overviews above rebuild too
+    return sorted(out)
 
 
 FROZEN = "_dirty-downsample.txt"

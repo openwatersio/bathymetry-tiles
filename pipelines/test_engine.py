@@ -139,6 +139,67 @@ def check_shard_partition():
             os.environ["FORCE_REBUILD"] = env_force
 
 
+def check_stale_overview():
+    """An overview must rebuild when a child it averages is newer than it (or about to be
+    self-healed), and that staleness must cascade up the pyramid. The bug: a child rebuilt by a
+    later run/self-heal (no source-set change, own pmtiles present) never re-dirtied its coarse
+    parent, so the parent kept averaging the old child and went stale forever (observed: a z6
+    tile 4 days older than the z7 it averages)."""
+    import downsampling
+    env_force = os.environ.pop("FORCE_REBUILD", None)  # the incremental path
+    tmp = tempfile.mkdtemp()
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp)
+        prev, cur = "01AAAAAAAAAAAAAAAAAAAAAAAA", "01BBBBBBBBBBBBBBBBBBBBBBBB"
+        # An overview chain: z7 (4-4-5-7) averages a z8 base; z6 (3-2-2-6) averages the z7;
+        # z5 (2-1-1-5) averages the z6. Identical in both coverings => no source-change dirt.
+        chain = {  # downsampling.csv stem -> child pmtiles it references
+            "4-4-5-7": "8-77-95-8.pmtiles",
+            "3-2-2-6": "4-4-5-7.pmtiles",
+            "2-1-1-5": "3-2-2-6.pmtiles",
+        }
+        for aid in (prev, cur):
+            os.makedirs(f"store/aggregation/{aid}")
+            open(f"store/aggregation/{aid}/8-0-0-8-aggregation.csv", "w").close()  # >=2 ids, no diff
+            for stem, child in chain.items():
+                with open(f"store/aggregation/{aid}/{stem}-downsampling.csv", "w") as f:
+                    f.write(f"filename\n{child}\n")
+        owns = [f"{stem}.pmtiles" for stem in chain] + ["8-77-95-8.pmtiles"]
+
+        def write_listing(present, mtimes):
+            with open("store/pmtiles-keys.txt", "w") as f:
+                f.write("".join(f"bathymetry/pmtiles/{n}\n" for n in present))
+            with open("store/pmtiles-mtimes.txt", "w") as f:
+                f.write("".join(f"{ts}\tbathymetry/pmtiles/{n}\n" for n, ts in mtimes.items()))
+
+        # All present; z7 is NEWER than the z6/z5 above it (z7 self-healed last run, parents not).
+        write_listing(owns, {
+            "8-77-95-8.pmtiles": "2026-06-10 00:00:00",
+            "4-4-5-7.pmtiles":   "2026-06-22 00:00:00",  # fresh child
+            "3-2-2-6.pmtiles":   "2026-06-18 00:00:00",  # stale: older than its z7 child
+            "2-1-1-5.pmtiles":   "2026-06-18 00:00:00",  # only stale once z6 rebuilds (cascade)
+        })
+        dirty = {fp.split("/")[-1].replace("-downsampling.csv", "") for fp in downsampling.dirty_filepaths()}
+        assert dirty == {"3-2-2-6", "2-1-1-5"}, f"stale cascade wrong: {dirty}"
+        assert "4-4-5-7" not in dirty, "the fresh child must not rebuild (it is newer than its own child)"
+
+        # Missing child => parent self-heals this run, cascading up the whole chain.
+        write_listing([n for n in owns if n != "8-77-95-8.pmtiles"], {
+            "4-4-5-7.pmtiles": "2026-06-22 00:00:00",
+            "3-2-2-6.pmtiles": "2026-06-22 00:00:00",
+            "2-1-1-5.pmtiles": "2026-06-22 00:00:00",
+        })
+        dirty = {fp.split("/")[-1].replace("-downsampling.csv", "") for fp in downsampling.dirty_filepaths()}
+        assert dirty == {"4-4-5-7", "3-2-2-6", "2-1-1-5"}, f"missing-child cascade wrong: {dirty}"
+        print("stale-overview ok — older-than-child + missing-child both rebuild and cascade up")
+    finally:
+        os.chdir(cwd)
+        shutil.rmtree(tmp, ignore_errors=True)
+        if env_force is not None:
+            os.environ["FORCE_REBUILD"] = env_force
+
+
 def main():
     tmp = tempfile.mkdtemp()
     try:
@@ -256,4 +317,5 @@ def main():
 if __name__ == "__main__":
     check_priority()
     check_shard_partition()
+    check_stale_overview()
     main()

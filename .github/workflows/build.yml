@@ -163,7 +163,12 @@ jobs:
           # …and the list of already-built pmtiles, so the diff rebuilds any covering
           # tile whose artifact is missing (self-heal — coverings are pushed before
           # the tiles exist, so a failed prior build can leave gaps the diff trusts).
-          aws s3 ls "s3://$DATA_BUCKET/bathymetry/pmtiles/" --recursive | awk '{print $4}' > store/pmtiles-keys.txt || true
+          # Keep each tile's LastModified too: the downsample diff rebuilds an overview that
+          # is older than a child it averages (a child rebuilt by a later run/self-heal never
+          # re-dirtied its coarse parent, which then went stale — see downsampling.dirty_filepaths).
+          aws s3 ls "s3://$DATA_BUCKET/bathymetry/pmtiles/" --recursive > /tmp/pmtiles-ls.txt || true
+          awk '{print $4}' /tmp/pmtiles-ls.txt > store/pmtiles-keys.txt
+          awk '{print $1" "$2"\t"$4}' /tmp/pmtiles-ls.txt > store/pmtiles-mtimes.txt
       # …plus the prior covering(s) so the dirty-diff has something to compare to.
       # markers: false — the diff reads CSVs only, never the resume markers.
       - name: Pull previous covering from R2
