@@ -81,8 +81,9 @@ overlaps. Zoom caps are display caps (per source via `max_zoom`), not native res
 | CUDEM 1/3     | ~10 m      | z12      | US coast (broader) | NAVD88                 | `cudem_third`       |
 | NOAA S-102    | ~4–16 m    | z14      | US navigable       | MLLW (+ uncertainty)   | `noaa_s102`         |
 
-Not yet ingested: CUDEM territory products (HI/PR/USVI/Guam/AmSam/CNMI) and NIWA NZ
-— pulled in when needed.
+Not yet ingested: CUDEM territory products (HI/PR/USVI/Guam/AmSam/CNMI) — pulled in
+when needed. The worldwide expansion candidates (Canada/NONNA, Australia, Ireland,
+Indonesia, the lakes, …) are catalogued under [Source expansion](#source-expansion--worldwide-coverage-candidates) below.
 
 The large US sources (CUDEM, S-102) are range-read straight off NOAA's public
 buckets at build time rather than downloaded — CUDEM alone is ~188 GB. S-102 takes
@@ -184,14 +185,212 @@ gives depths worth measuring.
 
 ---
 
+## Source expansion — worldwide coverage candidates
+
+Feeds Milestone 2. Today the mosaic is sharp only where we've ingested: Europe
+(EMODnet), US (CUDEM, S-102), Denmark (DDM). Everywhere else is GEBCO's ~450 m.
+This is the researched catalog of sources that would extend higher-than-GEBCO
+coverage worldwide — pick by the same rule as everywhere: **resolution sets the
+zoom cap, an openly-redistributable license is the gate** (data is baked into
+served tiles, so viewer-only / encrypted / non-commercial / request-by-email
+sources are unusable — listed as SKIP so nobody re-researches them). GEBCO stays
+the fallback under all of them. Datum is noted because the chart wants low-water
+(Milestone 3): sources already on **LAT / MLLW / Chart Datum** are the cleanest
+fit; MSL/elevation ones need an offset.
+
+**Access legend:** **A** = streamed COG, range-read at build via `/vsicurl`/`/vsis3`,
+no download (CUDEM/S-102 path). **B** = prepared download → normalize to 4326 COG →
+R2 → stream (EMODnet/DDM path). **C** = viewer/encrypted/request-only (unusable).
+
+### Build-next shortlist (open + clear coverage win)
+
+Roughly in coverage-per-effort order:
+
+1. **[CHS NONNA-10/100](https://data.chs-shc.ca/)** (Canada) — 10 m / 100 m, **Chart Datum** (exactly the low-water datum the chart wants), OGL-Canada. Covers Canadian coasts + the Canadian Great Lakes half + the Canadian Arctic. Access B (no public COG bucket). z13 / z11.
+2. **[gbr30](https://files.ausseabed.gov.au/survey/Great%20Barrier%20Reef%20Bathymetry%202020%2030m.zip)** (Australia) — 30 m, CC-BY 4.0, one range-readable 3.8 GB file over the Great Barrier Reef + Coral Sea. Turnkey. z12.
+3. **AusSeabed survey COGs** (Australia) — 2–10 m, CC-BY 4.0, on a **public S3 bucket** (`ausseabed-public-warehouse-bathymetry`, ap-southeast-2) → pure access-A streaming like CUDEM. Patchy per-survey footprints (needs a coverage-polygon index). z12–13.
+4. **[INFOMAR](https://data-infomargis.opendata.arcgis.com/)** (Ireland) — 5–10 m (2 m best inshore), **LAT**, CC-BY 4.0. Pick the WGS84 variant. z12–13.
+5. **[Vaklodingen 20m](https://downloads.rijkswaterstaatdata.nl/bodemhoogte_20mtr/bodemhoogte_20mtr.tif)** (Netherlands) — 20 m, **CC0**, a single ~97 MB GeoTIFF (EPSG:28992 → reproject). Cleanest ingest in the whole catalog. z12.
+6. **UK [SurfZone 2m](https://environment.data.gov.uk/dataset/77e6f743-d708-4909-a80f-9510b7dbaa16) + [CCO swath](https://maps.coastalmonitoring.org/cco/)** (England) — 1–2 m, OGL v3. England nearshore patchwork (EPSG:27700, ODN datum). z13–14.
+7. **[BATNAS](https://tanahair.indonesia.go.id/demnas/)** (Indonesia) — 6″ (~180 m), open w/ attribution (no resale), covers the whole archipelago. Login-gated fetch → R2. z10.
+8. **[EMODnet DTM 2024](https://emodnet.ec.europa.eu/en/bathymetry) — extend the clip** to the N. African Med shelf (Morocco→Egypt) + the Caribbean tile it already includes. Same product/pipeline we run for Europe → near-zero marginal effort. CC-BY 4.0, LAT. z11.
+9. **[swIOBC](https://doi.pangaea.de/10.1594/PANGAEA.880618)** (SW Indian Ocean) — 250 m, CC-BY 3.0, real uplift over GEBCO off Kenya/Tanzania/Mozambique/Madagascar. One PANGAEA fetch. z9–10.
+10. **[IBCSO v2](https://doi.pangaea.de/10.1594/PANGAEA.937574)** (Southern Ocean, N to 50°S) — 500 m, CC-BY 4.0. Only clearly-open Antarctic option; reproject EPSG:9354. z8–9.
+11. **Inland lakes** (separate layer, pure GEBCO gap-fill): **[African Great Lakes CC0 bundle](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/ITCOGT)** (Victoria/Albert/Edward/George, one .7z), **[swisstopo Alpine lakes](https://data.geo.admin.ch/api/stac/v1/collections/ch.swisstopo.swissbathy3d/items)** + **[Bodensee](https://doi.org/10.1594/PANGAEA.855987)**, **[Great Salt Lake](https://doi.org/10.5066/P9DGG75W)** (0.5 m, stream the 34 GB), **[Lake Tahoe](https://pubs.usgs.gov/dds/dds-55/pacmaps/exports/lt_bathy.e00.gz)**, and **[NOAA NOS Estuarine DEMs](https://www.ncei.noaa.gov/products/estuarine-bathymetric-digital-elevation-models)** (70 US estuaries, already MLLW).
+
+### Canada, Arctic, Antarctic & global compilations
+
+| Source | Res | Coverage | Datum | License | Cap | Verdict (access) |
+| ------ | --- | -------- | ----- | ------- | --- | ---------------- |
+| CHS NONNA-10 | ~10 m | Cdn coasts + Great Lakes + Cdn Arctic | **Chart Datum** ✓ | OGL-Canada ✓ | z13 | **BUILD** (B; no COG bucket → WCS/zip → R2) |
+| CHS NONNA-100 | ~100 m | same | Chart Datum ✓ | OGL-Canada ✓ | z11 | OPPORTUNISTIC (B) — fallback where 10 m has gaps |
+| IBCSO v2 | 500 m | Southern Ocean, N→50°S | MSL | CC-BY 4.0 ✓ | z8–9 | **BUILD** (B) — reproject EPSG:9354; only open Antarctic |
+| IBCAO v5.2 | 100 m | Arctic, S→64°N | MSL | ⚠ disclaimer-gated, ambiguous | z11 | OPPORTUNISTIC — **verify redistribution first**; EPSG:3996 |
+| GMRT v4.x | ~100 m (multibeam only) | global swaths | mixed | CC-BY 4.0 ✓ | z9–12 | OPPORTUNISTIC — dynamic GridServer, targeted fill only |
+| SRTM15+ V2.7 | ~450 m | global | MSL | public domain | — | SKIP — same res as GEBCO, already folded in |
+| ArcticDEM | 2 m | Arctic **land** | — | — | — | SKIP — topographic, not bathymetry |
+
+### Australia, New Zealand & Pacific
+
+| Source | Res | Coverage | Datum | License | Cap | Verdict (access) |
+| ------ | --- | -------- | ----- | ------- | --- | ---------------- |
+| gbr30 | 30 m | GBR + Coral Sea + QLD coast | MSL | CC-BY 4.0 ✓ | z12 | **BUILD** (B/A; one range-readable file) |
+| AusSeabed survey COGs | 2–10 m | AU EEZ survey footprints (patchy) | MSL | CC-BY 4.0 ✓ | z12–13 | **BUILD** (A; public S3, needs coverage index) |
+| AusBathyTopo 250m 2024 | 250 m | Australia EEZ | MSL | CC-BY 4.0 ✓ | z9 | OPPORTUNISTIC (B) — national fill, barely beats GEBCO |
+| gbr100 | 100 m | GBR + deeper Coral Sea | MSL | CC-BY 2.5-AU ✓ | z11 | OPPORTUNISTIC (B) — only the deep strip gbr30 misses |
+| NIWA NZ 250m | 250 m | NZ EEZ | — | **CC BY-NC-SA ✗** | — | SKIP — non-commercial; NZ stays GEBCO-only |
+| LINZ hydro | vector/grid | NZ | Approx LAT | **S-63 encrypted / email ✗** | — | SKIP — not obtainable as an open grid |
+| SPC Pacific islands | 5 m lidar | Pacific islands | local | **gated / country-owned ✗** | — | SKIP — sovereignty-restricted; public entries are GEBCO-derived |
+
+### Europe — national, beyond EMODnet (z11)
+
+| Source | Res | Coverage | Datum | License | Cap | Verdict (access) |
+| ------ | --- | -------- | ----- | ------- | --- | ---------------- |
+| INFOMAR | 5–10 m (2 m best) | Ireland shelf | **LAT** ✓ | CC-BY 4.0 ✓ | z12–13 | **BUILD** (B; pick WGS84 variant) |
+| Vaklodingen 20m | 20 m | Netherlands | NAP (MSL) | **CC0** ✓ | z12 | **BUILD** (B; single file, EPSG:28992) |
+| UK SurfZone DEM 2m | 2 m | England intertidal | ODN | OGL v3 ✓ | z13 | **BUILD** (B; EPSG:27700) |
+| UK CCO swath | 1–2 m | England nearshore | ODN/CD | OGL v3 ✓ | z13–14 | **BUILD** (B; per-survey patchwork) |
+| UKHO ADMIRALTY EEZ surfaces | 1–5 m | UK EEZ | **Chart Datum** ✓ | OGL v3 (per-survey varies) | z13–14 | OPPORTUNISTIC (B) — vet OGL per survey, skip fee-bearing |
+| Kartverket 50m | 50 m | Norway coast + Svalbard | **LAT** ✓ | NLOD ✓ | z11–12 | OPPORTUNISTIC (B) — 2024-declassified; gappy, marginal |
+| BSH DGM 50m | 50 m | German N. Sea + Baltic | **LAT/SKN** ✓ | open (GeoNutzV) ✓ | z12 | OPPORTUNISTIC (B) — only modestly beats EMODnet |
+| Iceland MFRI | 10 m | Iceland survey patches | ISN2004 | open (cite) ✓ | z12 | OPPORTUNISTIC (B) — discrete patches |
+| SHOM Litto3D | 1–5 m | French coastal ribbon | LAT per-zone | Licence Ouverte ✓ | z13–14 | OPPORTUNISTIC (B) — thin coverage, ASC→COG, per-zone datum |
+| HELCOM BSBD | 250 m | Baltic | — | CC-BY 3.0 | — | SKIP — coarser than EMODnet (115 m) already there |
+| Sweden / Spain / Portugal / Italy / Greece | — | — | — | **restricted / NC / no gain ✗** | — | SKIP — defense-restricted, viewer-only, or ≤EMODnet |
+
+### Asia (mostly restricted — the key finding)
+
+| Source | Res | Coverage | Datum | License | Cap | Verdict (access) |
+| ------ | --- | -------- | ----- | ------- | --- | ---------------- |
+| BATNAS (Indonesia, BIG) | ~180 m | Indonesian archipelago | MSL (verify) | open, attrib, no resale ✓ | z10 | **BUILD** (B; login-gated fetch → R2) |
+| KHOA BADA2024 (Korea) | ~150 m | Korean coast/EEZ | unknown — **verify** | KOGL Type 1 ✓ | z11 | OPPORTUNISTIC (B) — confirm datum + KOGL badge |
+| HHU24SWDSCS (S. China Sea) | 10 m | scattered SCS reefs | SDB | CC-BY 4.0 ✓ | z12 | OPPORTUNISTIC (B) — sparse, contested waters |
+| Japan (JODC J-EGG500, JHA M7000) | 500 m | Japan | — | **no-redistribute / paid ✗** | — | SKIP — soundings already reach us via GEBCO |
+| India (INCOIS, NHO) | — | India | — | **nationals-only / S-63 ✗** | — | SKIP |
+| Philippines (NAMRIA), China, Taiwan ODB | — | — | — | **priced / state-secret / gated ✗** | — | SKIP |
+| Vietnam / Thailand / Malaysia / Singapore | — | — | — | **ENC/chart only ✗** | — | SKIP — no open grid |
+
+### Latin America, Caribbean, Africa & Middle East (sparse)
+
+| Source | Res | Coverage | Datum | License | Cap | Verdict (access) |
+| ------ | --- | -------- | ----- | ------- | --- | ---------------- |
+| EMODnet DTM 2024 (extend clip) | 115 m | N. African Med shelf + Caribbean tile | **LAT** ✓ | CC-BY 4.0 ✓ | z11 | **BUILD** (B) — already pipelined, just widen the clip |
+| swIOBC | 250 m | SW Indian Ocean / E. Africa | ~MSL | CC-BY 3.0 ✓ | z9–10 | **BUILD** (B) — one PANGAEA fetch |
+| GMRT | ~100 m swaths | global multibeam | mixed | CC-BY 4.0 ✓ | z9–11 | OPPORTUNISTIC — patchy; "not for navigation" |
+| Red Sea / Strait of Tiran patches | 10–30 m | Red Sea rift + Tiran | unstated | CC-BY 4.0 ✓ | z12 | OPPORTUNISTIC (B) — Tiran coastal; rest deep curiosities |
+| Chilean fjord grids | 10–50 m | S. Chile fjords | SHOA-CD | per-record — **verify** | z12 | OPPORTUNISTIC (B) — license-gated scattered patches |
+| Brazil LEPLAC / de Wet SA shelf / Lesser Antilles / EOMAP / Israel / Mexico IBCCA | varies | — | — | **study-only / NC / no-license / commercial ✗** | — | SKIP |
+| Brazil DHN, Chile SHOA, Argentina SHN, Peru/Colombia/Ecuador, Caribbean states, SANHO, W/E Africa, Arabian Gulf | — | populated coasts | — | **closed / request-only ✗** | — | **GEBCO-only** — no open hi-res source exists |
+
+### Inland waters — lakes & rivers (separate layer; Great Lakes covered elsewhere)
+
+Pure GEBCO gap-fill (lakes are hydraulically isolated → no seam against the ocean
+base). Freshwater grids store **lakebed _elevation_** in a national/geoid datum, so
+each needs a per-lake "subtract surface level" step. **No open _surveyed_ global
+inland compilation exists** — the global products are modeled, usable only as a
+labeled cosmetic low-zoom fill.
+
+| Source | Model | Res | Coverage | License | Cap | Verdict (access) |
+| ------ | ----- | --- | -------- | ------- | --- | ---------------- |
+| GLOBathy | **modeled** raster | ~30 m | all 1.4M lakes, global | CC-BY 4.0 ✓ | z6–8 | OPPORTUNISTIC (B) — synthetic cones; label "modeled" |
+| 3D-LAKES | altimetry-hybrid | per-lake | 510k lakes (98.9% storage) | CC-BY 4.0 ✓ | z9–11 | OPPORTUNISTIC (B) — awkward format, less proven |
+| HydroLAKES | vector + scalar | — | global | CC-BY 4.0 ✓ | — | SKIP as bathy — keep as a free lake mask |
+| African Great Lakes (GLWNB-2020) | surveyed DEM | 50–100 m | Victoria/Albert/Edward/George | **CC0** ✓ | z11 | **BUILD** (B) — one .7z, per-lake CRS |
+| swisstopo swissBATHY3D | surveyed DEM | 1–2 m | Geneva/Neuchâtel/Maggiore(CH) | OGD ✓ | z13–14 | **BUILD** (B) — elevation→subtract level (LN02) |
+| Bodensee (IGKB) | surveyed DEM | 3 m | Lake Constance | CC-BY 3.0 ✓ | z14 | **BUILD** (B) — EPSG:25832, DHHN92 |
+| Great Salt Lake (USGS TBDEM) | surveyed DEM | 0.5 m | whole lake | **CC0** ✓ | z13–14 | **BUILD** (A) — stream 34 GB, mask dry playa |
+| Lake Tahoe (USGS DDS-55) | surveyed DEM | 10 m | whole lake | public domain ✓ | z13 | **BUILD** (B) — use the .e00 grid |
+| NOAA NOS Estuarine DEMs | raster | 30 m | 70 US estuaries (Chesapeake, SF Bay, Puget Sound…) | public domain ✓ | z11–12 | **BUILD** (A/B) — already **MLLW**, netCDF→COG |
+| Caspian Sea | — | — | — | (in GEBCO) | — | SKIP — already free inside GEBCO_2026 |
+| USACE eHydro | XYZ/TIN points | dense | 61 US federal channels | public domain ✓ | z11–13 | OPPORTUNISTIC (A) — grid it yourself; per-district datum chaos |
+| Amazon estuary / NL+German rivers / USGS reservoir+CoNED | raster/points | 1–30 m | scattered reaches | CC-BY/CC0/PD ✓ | z12–14 | OPPORTUNISTIC — high-zoom regional overlays only |
+| Baikal / Tanganyika / Malawi / Great Bear+Slave / Titicaca / MN-DNR / Champlain / Salton / TWDB / Mekong+Yangtze | varies | — | — | **NC / no-license / points-only / closed ✗** | — | SKIP |
+
+### Cross-cutting notes
+
+- **Datum is the recurring wrinkle.** Already low-water (ideal, plug into Milestone 3
+  cleanly): NONNA, INFOMAR, UKHO-EEZ, Kartverket, BSH, SHOM, NOS-Estuarine (MLLW).
+  Need an offset: everything MSL/NAP/ODN/elevation (AusSeabed, gbr30, Vaklodingen, the
+  lakes). eHydro mixes MLLW vs LWRP **per district** — its single biggest ingest risk.
+- **Two clean access-A (no-download) streams** beyond CUDEM/S-102: AusSeabed's public S3
+  COGs and Great Salt Lake's GeoTIFF. Everything else is access-B (download → R2), the
+  EMODnet/DDM path. Restricted national HOs are access-C and excluded.
+- **License is the real filter, not data existence.** Whole regions surveyed their
+  waters but lock the result: NZ (NIWA non-commercial), most of Asia, Brazil (LEPLAC
+  "study only"), much of the Mediterranean and the Arabian Gulf. For those coasts GEBCO
+  stays the only option — recorded here so it isn't re-litigated.
+- **Modeled ≠ surveyed.** GLOBathy/3D-LAKES are interpolated depth, not measurement —
+  fine as a labeled low-zoom fill, never as authoritative depth (violates the "honest
+  about quality" principle if shown un-flagged).
+
+### Plan of action — ingesting the shortlist
+
+Every source is the same unit of work: a `sources/<id>/` dir cloning an existing
+recipe — **no engine changes for any of the shortlist**, only `cover`/`aggregate`
+already handle a new source by priority.
+
+1. `metadata.json` — name/producer/website/license, `max_zoom` (sets the display cap
+   _and_ priority `(maxzoom, id)`), the vertical datum, and any flags (`negate`,
+   `mixed_crs`, `band`, `priority`).
+2. `file_list.txt` — fetch URLs (download tiles, or S3/HTTP COG refs for streamed).
+3. `Justfile` — clone the closest existing source; set the source `--crs`, and the
+   datum step: `source_datum --negate` for positive-down depth, `--offset <m>` for a
+   constant shift (e.g. lakebed elevation → lake-surface-as-zero).
+4. `just source <id>` → inspect the overlay; `just preview` over its bbox → eyeball
+   depths + seams; add `<id>` to the `sources` matrix in `build.yml`.
+
+Reuse map — which recipe each clones, and the params that change:
+
+| Source | Clones | source `--crs` | datum step | `max_zoom` | fetch note |
+| ------ | ------ | -------------- | ---------- | ---------- | ---------- |
+| Vaklodingen | `ddm` | EPSG:28992 | — (NAP bed elev) | 12 | one file |
+| gbr30 | `emodnet` | EPSG:4326 | — (MSL) | 12 | one zip |
+| swIOBC | `gebco` | verify | — | 10 | one PANGAEA file |
+| IBCSO v2 | `gebco` | EPSG:9354 | — | 9 | one file; polar warp |
+| EMODnet ext | _edit `emodnet`_ | — | — | 11 | add N-Afr+Carib tiles to `file_list` |
+| INFOMAR | `emodnet` | EPSG:4326 | — (LAT, neg) | 13 | enumerate WGS84 tiles |
+| UK SurfZone | `emodnet` | EPSG:27700 | — (ODN) | 13 | enumerate 5 km tiles |
+| AusSeabed | `cudem` | `mixed_crs` | — (per-survey) | 12 | enumerate L3 S3 COG urllist |
+| CHS NONNA-10/100 | `emodnet` | EPSG:4326 | verify sign | 13/11 | mirror to R2 (WCS/zip), register prepared |
+| BATNAS | `emodnet` | EPSG:4326 | — (MSL) | 10 | one-time auth fetch → R2 → prepared |
+| African Great Lakes | `ddm` | per-lake UTM | `--offset` per lake | 11 | un-.7z |
+| swisstopo + Bodensee | `ddm` | 2056 / 25832 | `--offset` (LN02/DHHN92→0) | 14 | STAC / PANGAEA |
+| Lake Tahoe | `ddm` | e00 grid | `--offset` (lake level) | 13 | `.e00` → tif |
+| Great Salt Lake | `ddm` | — | `--offset` (NAVD88→level) | 13 | 34 GB once; mask dry playa |
+| NOS Estuarine DEMs | `emodnet` | EPSG:4326 | — (MLLW) | 12 | netCDF→COG, 70 estuaries |
+
+Sequenced to prove the cheap path before the awkward ones:
+
+- **P0 — pilot:** Vaklodingen (CC0, single file). Proves a non-US prepared overlay
+  flows source→cover→aggregate→bundle→preview end-to-end. Smallest possible diff.
+- **P1 — single-file wins:** gbr30, swIOBC, IBCSO v2, + the EMODnet clip extension.
+- **P2 — multi-tile prepared:** INFOMAR, UK SurfZone (build the tile `file_list`).
+- **P3 — streamed S3:** AusSeabed — enumerate the public-bucket L3 COGs into a
+  urllist, `mixed_crs` per-survey reproject. The one with real assembly work.
+- **P4 — mirror-to-R2:** NONNA (Canada), BATNAS (Indonesia) — sidestep the WCS /
+  login fetch by pulling once and registering from our bucket (no scraper to build).
+- **P5 — inland lakes layer:** confirm a lake overlay bundles with no false land,
+  then African Great Lakes / swisstopo+Bodensee / Tahoe / Great Salt Lake / NOS
+  estuaries. Shared mechanic = lakebed elevation→depth via `source_datum --offset`.
+
+Carried per source (feeds Milestone 3): record the vertical datum in `metadata.json`
+even though only the constant-offset first cut is applied today. **One blocker, not a
+build task:** IBCAO's redistribution rights are ambiguous — resolve the licence before
+building the Arctic source.
+
+---
+
 ## Backlog — opportunistic data & ops
 
 Pull in only when a concrete need appears (inherited from the retired
 source/coverage roadmap's "fidelity & ops" list):
 
 - **NOAA CSB** crowdsourced bathymetry as additional fill.
-- **GLOBathy** lake bathymetry — a separate inland layer, not the marine mosaic.
 - **Auto-refresh** as upstream sources update (GEBCO annual, others irregular).
+
+(Concrete source candidates — marine and inland, with resolution/license/datum and
+BUILD/SKIP verdicts — live in [Source expansion](#source-expansion--worldwide-coverage-candidates) above. GLOBathy and the
+surveyed lakes are catalogued there as the inland layer.)
 
 ---
 
