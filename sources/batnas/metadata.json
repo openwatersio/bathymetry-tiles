@@ -1,0 +1,8 @@
+{
+    "name": "BATNAS Batimetri Nasional (Indonesia, ~180 m)",
+    "producer": "Badan Informasi Geospasial (BIG)",
+    "website": "https://tanahair.indonesia.go.id/",
+    "license": "BIG Ina-Geoportal terms (open, attribution; no resale)",
+    "max_zoom": 10,
+    "datum": "MSL"
+}

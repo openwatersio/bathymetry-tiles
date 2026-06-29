@@ -261,7 +261,7 @@ EMODnet already covers European seas **including the N. African Med shelf** (the
 
 | Source | Res | Coverage | Datum | License | Cap | Verdict (access) |
 | ------ | --- | -------- | ----- | ------- | --- | ---------------- |
-| BATNAS (Indonesia, BIG) | ~180 m | Indonesian archipelago | MSL ✓ | open, attrib, no resale ✓ | z10 | **BUILT** — token-API harvest (`source_download_batnas`); mirror to R2 for CI |
+| BATNAS (Indonesia, BIG) | ~180 m | Indonesian archipelago | MSL ✓ | open, attrib, no resale ✓ | z10 | **BUILT** — 53 sheets mirrored to R2, standard prepared recipe; `harvest.py` refreshes the mirror |
 | KHOA BADA2024 (Korea) | ~150 m | Korean coast/EEZ | unknown — **verify** | KOGL Type 1 ✓ | z11 | OPPORTUNISTIC (B) — confirm datum + KOGL badge |
 | HHU24SWDSCS (S. China Sea) | 10 m | scattered SCS reefs | SDB | CC-BY 4.0 ✓ | z12 | OPPORTUNISTIC (B) — sparse, contested waters |
 | Japan (JODC J-EGG500, JHA M7000) | 500 m | Japan | — | **no-redistribute / paid ✗** | — | SKIP — soundings already reach us via GEBCO |
@@ -351,7 +351,7 @@ Reuse map — which recipe each clones, and the params that change:
 | UK SurfZone | _(deferred → P4)_ | EPSG:27700 | — (ODN) | 13 | WCS/interactive only — no static tile URLs |
 | AusBathyTopo ✅ | `emodnet` | EPSG:4326 | — (MSL) | 9 | one ~2.8 GB national COG zip |
 | AusSeabed COGs | _(deferred)_ | — | — | 12–13 | per-survey; portal/WCS + coverage DB, not a urllist |
-| BATNAS ✅ | _custom_ | EPSG:4326 (assign) | — (MSL) | 10 | token-API harvest (`source_download_batnas`); mirror to R2 |
+| BATNAS ✅ | `emodnet`-like | EPSG:4326 (assign) | — (MSL) | 10 | R2 mirror of 53 sheets; `sources/batnas/harvest.py` refreshes it |
 | African Great Lakes | `ddm` | per-lake UTM | `--offset` per lake | 11 | un-.7z |
 | swisstopo + Bodensee | `ddm` | 2056 / 25832 | `--offset` (LN02/DHHN92→0) | 14 | STAC / PANGAEA |
 | Lake Tahoe | `ddm` | e00 grid | `--offset` (lake level) | 13 | `.e00` → tif |
@@ -368,8 +368,9 @@ Sequenced to prove the cheap path before the awkward ones:
 - **P3 — Australia:** AusBathyTopo 250 m national grid ✅ (clean single-file fill). The
   per-survey 2–10 m AusSeabed COGs are deferred — served via portal/WCS + a coverage DB,
   not a clean urllist, so they need a custom coverage-DB fetch when the detail is worth it.
-- **P4 — gated/awkward fetch:** BATNAS ✅ (reCAPTCHA login → token API, `source_download_batnas`;
-  harvest once, mirror to R2). UK SurfZone + CCO (England, WCS/interactive) is the last one.
+- **P4 — gated/awkward fetch:** BATNAS ✅ (reCAPTCHA-gated → 53 sheets mirrored to R2, standard
+  prepared recipe; `sources/batnas/harvest.py` refreshes the mirror). UK SurfZone + CCO (England,
+  WCS/interactive) is the last one.
   *(NONNA was built here too, then shelved — sparse survey coverage, wrong fit for the DEM
   mosaic; see the catalog. Revisit for Milestone-4 soundings.)*
 - **P5 — inland lakes layer:** confirm a lake overlay bundles with no false land,
