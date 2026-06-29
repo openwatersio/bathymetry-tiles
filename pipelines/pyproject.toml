@@ -17,6 +17,7 @@ dependencies = [
     "typing-extensions>=4.0",
     "geopandas>=1.1.3",
     "shapely>=2.1.2",
+    "py7zr>=1.1.3",
 ]
 
 # GDAL/tippecanoe are external CLIs (the Dockerfile is the source of truth), not

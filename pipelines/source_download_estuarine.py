@@ -22,6 +22,8 @@ are discrete estuaries, not a grid) — to build a subset, comment URLs in file_
 import os
 import sys
 
+import rasterio
+
 import config
 import utils
 
@@ -52,6 +54,12 @@ def main():
             silent=False,
         )
         os.remove(nc)
+        # Some estuary DEMs (e.g. the republished 2018 ones like grays_harbor) ship with
+        # no embedded CRS — they're geographic, so assign EPSG:4326, else source_bounds
+        # throws "crs not defined" for this mixed_crs source. UTM-zone estuaries keep theirs.
+        with rasterio.open(tif, "r+") as src:
+            if src.crs is None:
+                src.crs = rasterio.crs.CRS.from_epsg(4326)
 
 
 if __name__ == "__main__":
