@@ -12,15 +12,16 @@
  *   - z > planet.max_zoom, a source overlay covers it → that overlay's tile
  *   - otherwise                  → OVERZOOM the planet's deepest ancestor tile
  *
- * Overzoom of Terrarium is bilinear ON DECODED HEIGHTS, not on the packed bytes:
- * decode each source pixel to a float elevation, interpolate the elevations, re-encode.
- * Averaging the raw RGB would corrupt the decode (G wraps at 256); nearest-neighbour
- * leaves flat plateaus + cliff edges that the hillshade renders as stair-steps. Contours
- * need no overzoom — tippecanoe bakes base lines to the deepest zoom, so it's passthrough.
+ * Overzoom of Terrarium is bicubic ON DECODED HEIGHTS, not on the packed bytes: decode
+ * each source pixel to a float elevation, bicubically interpolate the elevations, re-encode.
+ * Averaging the raw RGB would corrupt the decode (G wraps at 256). Nearest leaves flat
+ * plateaus + cliffs; bilinear is only C0 so iso-depth band edges still step across coarse
+ * source cells. Bicubic (Catmull-Rom) is C1, so those edges curve smoothly. Contours need
+ * no overzoom — tippecanoe bakes base lines to the deepest zoom, so it's passthrough.
  */
 
 import { PMTiles, Source, RangeResponse } from "pmtiles";
-import { unpackTerrarium, packTerrariumInto } from "./terrarium";
+import { unpackTerrarium, packTerrariumInto, catmullRom } from "./terrarium";
 // jSquash on Workers: WASM must be imported as a module and passed to init()
 // (no fetch-based instantiation in the Workers runtime).
 import decodeWebp, { init as initWebpDecode } from "@jsquash/webp/decode";
@@ -125,11 +126,11 @@ function intersects(a: number[], b: number[]): boolean {
   return a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
 }
 
-// ── Terrarium overzoom: bilinear on decoded heights ─────────────────────────
-// Decode the ancestor tile to elevations, bilinearly resample the elevations into the
-// output sub-tile, re-encode. Smooths the DEM the way MapLibre would for a client-side
-// overzoom, so the hillshade no longer steps. Sampling clamps to the ancestor's edge:
-// seams at ancestor-tile boundaries flatten slightly — far below the old stair-stepping.
+// ── Terrarium overzoom: bicubic (Catmull-Rom) on decoded heights ────────────
+// Decode the ancestor tile to elevations, bicubically resample the elevations into the
+// output sub-tile, re-encode. Bicubic is C1, so iso-depth band edges curve smoothly across
+// coarse source cells instead of stepping (bilinear is only C0). Sampling clamps to the
+// ancestor's edge: seams at ancestor-tile boundaries flatten slightly — invisible vs the steps.
 async function overzoom(
   env: Env,
   srcFile: string,
@@ -153,33 +154,44 @@ async function overzoom(
   const src = img.data;
   const W = img.width,
     H = img.height;
+  // Decode the whole ancestor to heights once — each output pixel reads 16 taps, so
+  // re-unpacking per tap would decode every texel ~16×.
+  const ha = new Float64Array(W * H);
+  for (let p = 0, q = 0; p < ha.length; p++, q += 4)
+    ha[p] = unpackTerrarium(src[q], src[q + 1], src[q + 2]);
+
   const out = new Uint8ClampedArray(TILE * TILE * 4);
   const srcSize = TILE / span; // pixels of the ancestor this sub-tile spans
   const ox = subX * srcSize,
     oy = subY * srcSize;
-  const h = (sx: number, sy: number) => {
-    const i = (sy * W + sx) * 4;
-    return unpackTerrarium(src[i], src[i + 1], src[i + 2]);
-  };
+  const cl = (v: number, hi: number) => (v < 0 ? 0 : v > hi ? hi : v);
+
   for (let j = 0; j < TILE; j++) {
     // output-pixel centre → fractional ancestor row, clamped inside the tile
-    let sy = oy + (j + 0.5) / span - 0.5;
-    sy = sy < 0 ? 0 : sy > H - 1 ? H - 1 : sy;
-    const y0 = sy | 0,
-      y1 = y0 + 1 < H ? y0 + 1 : y0,
-      wy = sy - y0;
+    const sy = cl(oy + (j + 0.5) / span - 0.5, H - 1);
+    const iy = sy | 0,
+      ty = sy - iy;
+    const r0 = cl(iy - 1, H - 1) * W,
+      r1 = cl(iy, H - 1) * W,
+      r2 = cl(iy + 1, H - 1) * W,
+      r3 = cl(iy + 2, H - 1) * W;
     for (let i = 0; i < TILE; i++) {
-      let sx = ox + (i + 0.5) / span - 0.5;
-      sx = sx < 0 ? 0 : sx > W - 1 ? W - 1 : sx;
-      const x0 = sx | 0,
-        x1 = x0 + 1 < W ? x0 + 1 : x0,
-        wx = sx - x0;
-      const height =
-        h(x0, y0) * (1 - wx) * (1 - wy) +
-        h(x1, y0) * wx * (1 - wy) +
-        h(x0, y1) * (1 - wx) * wy +
-        h(x1, y1) * wx * wy;
-      packTerrariumInto(out, (j * TILE + i) * 4, height);
+      const sx = cl(ox + (i + 0.5) / span - 0.5, W - 1);
+      const ix = sx | 0,
+        tx = sx - ix;
+      const c0 = cl(ix - 1, W - 1),
+        c1 = cl(ix, W - 1),
+        c2 = cl(ix + 1, W - 1),
+        c3 = cl(ix + 2, W - 1);
+      // cubic across each of the 4 rows, then cubic down the 4 results
+      const h = catmullRom(
+        catmullRom(ha[r0 + c0], ha[r0 + c1], ha[r0 + c2], ha[r0 + c3], tx),
+        catmullRom(ha[r1 + c0], ha[r1 + c1], ha[r1 + c2], ha[r1 + c3], tx),
+        catmullRom(ha[r2 + c0], ha[r2 + c1], ha[r2 + c2], ha[r2 + c3], tx),
+        catmullRom(ha[r3 + c0], ha[r3 + c1], ha[r3 + c2], ha[r3 + c3], tx),
+        ty,
+      );
+      packTerrariumInto(out, (j * TILE + i) * 4, h);
     }
   }
   return encodeWebp({ data: out, width: TILE, height: TILE } as ImageData, {
