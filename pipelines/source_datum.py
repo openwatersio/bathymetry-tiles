@@ -22,7 +22,7 @@ import numpy as np
 import rasterio
 
 
-def transform_file(filepath, negate, offset):
+def transform_file(filepath, negate, offset, clamp_positive=False):
     with rasterio.open(filepath) as src:
         profile = src.profile
         data = src.read(1)
@@ -35,6 +35,14 @@ def transform_file(filepath, negate, offset):
     if offset:
         valid = valid + np.float32(offset)
     data[mask] = valid
+    if clamp_positive:
+        # After the offset, 0 = water surface; anything > 0 is the surrounding terrain
+        # (a lake DEM's land fringe, or a topobathy playa) — drop it to nodata so it
+        # can't bleed into the water layer as false land.
+        nodata = profile.get("nodata")
+        if nodata is None:
+            raise ValueError(f"{filepath}: --clamp-positive needs a nodata value set")
+        data[mask & (data > 0)] = np.float32(nodata)
 
     profile.update(driver="GTiff", dtype="float32", tiled=True,
                    blockxsize=512, blockysize=512, compress="deflate")
@@ -50,15 +58,19 @@ def main():
     p.add_argument("source")
     p.add_argument("--negate", action="store_true", help="flip positive-down depth to negative-down elevation")
     p.add_argument("--offset", type=float, default=0.0, help="metres added to reach ~MSL")
+    p.add_argument("--clamp-positive", action="store_true",
+                   help="after the offset, drop cells > 0 (above the water surface) to nodata — "
+                        "removes a lake DEM's land fringe / a topobathy playa")
     a = p.parse_args()
 
-    if not a.negate and a.offset == 0:
+    if not a.negate and a.offset == 0 and not a.clamp_positive:
         print(f"{a.source}: no datum transform (negate=False, offset=0)")
         return
     filepaths = sorted(glob(f"store/source/{a.source}/*.tif"))
-    print(f"{a.source}: negate={a.negate} offset={a.offset} on {len(filepaths)} file(s)")
+    print(f"{a.source}: negate={a.negate} offset={a.offset} clamp_positive={a.clamp_positive} "
+          f"on {len(filepaths)} file(s)")
     for filepath in filepaths:
-        transform_file(filepath, a.negate, a.offset)
+        transform_file(filepath, a.negate, a.offset, a.clamp_positive)
 
 
 def _check():
@@ -83,6 +95,19 @@ def _check():
     assert out[0, 0] == -6.0 and out[0, 1] == -11.0, out
     assert out[1, 0] == -1.0 and out[1, 1] == -3.5 and out[1, 2] == -101.0, out
     assert out[0, 2] == nodata, out[0, 2]  # nodata not negated into +9999
+
+    # clamp_positive: topobathy (negative bed, positive land) -> land dropped to nodata
+    path2 = os.path.join(d, "t2.tif")
+    arr2 = np.array([[-50.0, -10.0], [5.0, nodata]], dtype="float32")
+    with rasterio.open(path2, "w", driver="GTiff", height=2, width=2, count=1,
+                       dtype="float32", nodata=nodata, crs="EPSG:4326",
+                       transform=from_origin(0, 2, 1, 1)) as dst:
+        dst.write(arr2, 1)
+    transform_file(path2, negate=False, offset=0.0, clamp_positive=True)
+    with rasterio.open(path2) as src:
+        o2 = src.read(1)
+    assert o2[0, 0] == -50.0 and o2[0, 1] == -10.0, o2  # bed kept
+    assert o2[1, 0] == nodata and o2[1, 1] == nodata, o2  # +5 land clamped; nodata untouched
     print("source_datum.py self-check ok")
 
 
