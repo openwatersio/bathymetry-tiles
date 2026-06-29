@@ -1,0 +1,8 @@
+{
+    "name": "GSC Atlantic Bathymetric Compilation 100 m (Scotian Shelf + Newfoundland-Labrador)",
+    "producer": "Geological Survey of Canada / NRCan (MGMSP)",
+    "website": "https://open.canada.ca/data/en/dataset/335408ab-e7c9-581f-09fe-44487e1fd213",
+    "license": "Open Government Licence – Canada",
+    "max_zoom": 9,
+    "datum": "unverified (GSC marine compilation; confirm at ingest)"
+}

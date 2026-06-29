@@ -1,0 +1,8 @@
+# GSC Atlantic Bathymetric Compilation (NRCan Open File 9064, MGMSP program) — 100 m
+# continuous compiled DEM over the Scotian Shelf + Newfoundland-Labrador shelves. Lambert
+# Conformal Conic (custom WKT, no EPSG code → no --crs; aggregation reprojects). NoData -99999;
+# elevation (seafloor negative, like GEBCO) → no negate. OGL-Canada.
+# We serve our R2 MIRROR of the raw GeoTIFF — the NRCan FTP is painfully slow/flaky. Refresh the
+# mirror from the original when NRCan reissues the compilation (then re-upload to R2):
+#   https://ftp.maps.canada.ca/pub/nrcan_rncan/Topography_Topographie/Atlantic_bathymetric_compilation-compilation_bathymetrique_Atlantique/NL_Bioregion_Compilation_Final_no_Olex_no_Flemish_Feb24_2023_100m.tif
+https://data.openwaters.io/bathymetry/mirror/gsc_atlantic/NL_Bioregion_Compilation_Final_no_Olex_no_Flemish_Feb24_2023_100m.tif
