@@ -54,7 +54,7 @@ def merge_source(source):
             print(f"{j:_} / {len(filenames):_}")
         utils.run_command(
             f"ogr2ogr -f GPKG -update -append {merged} "
-            f"store/polygon/{source}/{filename}.gpkg -nln out -append -addfields", silent=True)
+            f"store/polygon/{source}/{filename}.gpkg -nln out -addfields", silent=True)
     union = f"store/polygon/{source}.gpkg"
     if os.path.isfile(union):
         os.remove(union)
