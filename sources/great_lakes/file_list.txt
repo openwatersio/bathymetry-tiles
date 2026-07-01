@@ -1,0 +1,9 @@
+# NOAA NCEI Great Lakes Bathymetry — 5 grids, 3 arc-sec (~90 m), NAD83, LWD datum.
+# Full open-lake grids (US + Canadian sides), direct HTTP .tar.gz, no login. This covers all
+# SIX Great Lakes water bodies: NGDC's Erie grid is "Lake Erie AND Lake Saint Clair", so
+# St. Clair is included in erie_lld (confirmed ~4.6 m at the lake centre) — no separate grid.
+https://www.ngdc.noaa.gov/mgg/greatlakes/superior/data/geotiff/superior_lld.geotiff.tar.gz
+https://www.ngdc.noaa.gov/mgg/greatlakes/michigan/data/geotiff/michigan_lld.geotiff.tar.gz
+https://www.ngdc.noaa.gov/mgg/greatlakes/huron/data/geotiff/huron_lld.geotiff.tar.gz
+https://www.ngdc.noaa.gov/mgg/greatlakes/erie/data/geotiff/erie_lld.geotiff.tar.gz
+https://www.ngdc.noaa.gov/mgg/greatlakes/ontario/data/geotiff/ontario_lld.geotiff.tar.gz
