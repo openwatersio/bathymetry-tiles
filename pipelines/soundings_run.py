@@ -189,7 +189,7 @@ def bundle():
     subprocess.run(
         ["tippecanoe", "-o", "store/bundle/soundings.pmtiles", "-f", "-l", "soundings",
          "-n", "Bathymetric soundings", "-A", utils.ATTRIBUTION, "-Z", "0", "-z", str(maxz),
-         "-P", "-q", "-r1", "-y", "depth_m", "-y", "depth_ft", "-y", "depth_fm", "-y", "depth_dm",
+         "-P", "-q", "-r1", "-y", "depth_m", "-y", "depth_ft", "-y", "depth_fm",
          *gj], check=True)
     print(f"soundings bundle: store/bundle/soundings.pmtiles (z0-{maxz}, {len(gj)} tiles)")
 
